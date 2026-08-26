@@ -26,7 +26,7 @@ import { useAuth } from '@/auth';
 import {
   WhitelistRequest,
   RequestStatus,
-  STATUS_CONFIG,
+  getStatusConfig,
 } from '@/types/request.types';
 import { Loader, EmptyState, ErrorState } from '@/components/common';
 
@@ -267,8 +267,8 @@ export function MyRequestsPage() {
                     </TableCell>
                     <TableCell>
                       <Chip
-                        label={STATUS_CONFIG[request.status].label}
-                        color={STATUS_CONFIG[request.status].color}
+                        label={getStatusConfig(request.status).label}
+                        color={getStatusConfig(request.status).color}
                         size="small"
                       />
                     </TableCell>

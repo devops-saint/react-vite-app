@@ -7,7 +7,15 @@ export type RequestStatus =
   | 'MERGED'
   | 'COMPLETED'
   | 'REJECTED'
-  | 'REQUEST_RECEIVED'; // Added backend status
+  | 'REQUEST_RECEIVED' // Added backend status
+  // GitOps webhook statuses (set by the PR webhook as the linked PR progresses)
+  | 'PR_CREATED'
+  | 'PR_UPDATED'
+  | 'PR_APPROVED'
+  | 'PR_NEEDS_WORK'
+  | 'PR_DECLINED'
+  | 'PR_DELETED'
+  | 'UNKNOWN';
 
 // Environment Types
 export type EnvironmentName = 'DEV' | 'QA' | 'PRD';
@@ -140,7 +148,27 @@ export const STATUS_CONFIG: Record<
   COMPLETED: { label: 'Completed', color: 'success' },
   REJECTED: { label: 'Rejected', color: 'error' },
   REQUEST_RECEIVED: { label: 'Request Received', color: 'info' }, // Added backend status
+  // GitOps webhook statuses
+  PR_CREATED: { label: 'PR Created', color: 'primary' },
+  PR_UPDATED: { label: 'PR Updated', color: 'primary' },
+  PR_APPROVED: { label: 'PR Approved', color: 'success' },
+  PR_NEEDS_WORK: { label: 'Needs Work', color: 'warning' },
+  PR_DECLINED: { label: 'PR Declined', color: 'error' },
+  PR_DELETED: { label: 'PR Deleted', color: 'default' },
+  UNKNOWN: { label: 'Unknown', color: 'default' },
 };
+
+/**
+ * Safe lookup for STATUS_CONFIG. Falls back to a generic entry instead of
+ * throwing when the backend reports a status the frontend doesn't know
+ * about yet (e.g. a new GitOps webhook event type) - status values are
+ * managed independently by the backend, so this must never assume the
+ * map is exhaustive.
+ */
+export const getStatusConfig = (
+  status: string
+): { label: string; color: (typeof STATUS_CONFIG)[RequestStatus]['color'] } =>
+  STATUS_CONFIG[status as RequestStatus] ?? { label: status || 'Unknown', color: 'default' };
 
 // ========================================
 // API Gateway Payload Types

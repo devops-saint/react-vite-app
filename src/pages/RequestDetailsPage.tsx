@@ -21,7 +21,7 @@ import { Timeline, Loader, ErrorState } from '@/components/common';
 import { config } from '@/config';
 import { requestService } from '@/api/services';
 import { useAuth } from '@/auth';
-import { RequestDetails, STATUS_CONFIG } from '@/types/request.types';
+import { RequestDetails, getStatusConfig } from '@/types/request.types';
 
 export function RequestDetailsPage() {
   const { id } = useParams<{ id: string }>();
@@ -78,7 +78,7 @@ export function RequestDetailsPage() {
   }
 
   const timelineItems = request.history.map((entry) => {
-    const statusColor = STATUS_CONFIG[entry.status].color;
+    const statusColor = getStatusConfig(entry.status).color;
     // Map MUI chip colors to Timeline colors
     const timelineColor:
       | 'primary'
@@ -91,7 +91,7 @@ export function RequestDetailsPage() {
 
     return {
       id: entry.timestamp,
-      title: STATUS_CONFIG[entry.status].label,
+      title: getStatusConfig(entry.status).label,
       description: entry.performedBy ? `By ${entry.performedBy}` : 'System',
       date: new Date(entry.timestamp).toLocaleString(),
       color: timelineColor,
@@ -163,8 +163,8 @@ export function RequestDetailsPage() {
                 </Typography>
                 <Box>
                   <Chip
-                    label={STATUS_CONFIG[request.status].label}
-                    color={STATUS_CONFIG[request.status].color}
+                    label={getStatusConfig(request.status).label}
+                    color={getStatusConfig(request.status).color}
                   />
                 </Box>
               </Grid>

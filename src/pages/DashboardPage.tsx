@@ -23,7 +23,7 @@ import CancelIcon from '@mui/icons-material/Cancel';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import { useAuth } from '@/auth';
 import { requestService } from '@/api/services';
-import { WhitelistRequest, STATUS_CONFIG } from '@/types/request.types';
+import { WhitelistRequest, getStatusConfig } from '@/types/request.types';
 import { Loader } from '@/components/common';
 
 export function DashboardPage() {
@@ -250,8 +250,8 @@ export function DashboardPage() {
                     </TableCell>
                     <TableCell>
                       <Chip
-                        label={STATUS_CONFIG[request.status].label}
-                        color={STATUS_CONFIG[request.status].color}
+                        label={getStatusConfig(request.status).label}
+                        color={getStatusConfig(request.status).color}
                         size="small"
                       />
                     </TableCell>
