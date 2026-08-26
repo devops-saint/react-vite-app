@@ -1,0 +1,1 @@
+{ "business_justification" : { "S" : "fdsfdsfdsfsdfsfsdfsdfdsfsd" }, "market_code" : { "S" : "uk" }, "request_id" : { "S" : "REQ-BB0E45F8" }, "environments" : { "M" : { "dev" : { "M" : { "buckets" : { "L" : [ { "S" : "bucket1" } ] } } }, "qa" : { "M" : { "buckets" : { "L" : [ { "S" : "bucket2" } ] } } } } }, "market_name" : { "S" : "United Kingdom" } }

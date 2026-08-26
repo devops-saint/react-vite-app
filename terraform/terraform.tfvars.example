@@ -1,0 +1,7 @@
+# Copy this file to terraform.tfvars, then adjust the deployed portal origin.
+# Keep localhost:3000 while developing the Vite app locally.
+cors_allow_origins = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  # "https://portal.example.com",
+]
