@@ -10,6 +10,23 @@ from botocore.exceptions import ClientError
 table = boto3.resource("dynamodb").Table(os.environ["REQUESTS_TABLE"])
 allowed_origins = set(json.loads(os.environ.get("CORS_ALLOW_ORIGINS", "[]")))
 
+# GitOps integration (optional): if unset, request creation still succeeds,
+# it just won't kick off a PR. Set GITOPS_LAMBDA_NAME once the GitOps
+# Lambda + its invoke permission are wired up in terraform.
+lambda_client = boto3.client("lambda")
+gitops_lambda_name = os.environ.get("GITOPS_LAMBDA_NAME")
+
+# Webhook -> status mapping (branch format: gitops/REQ-xxxxxxxx)
+WEBHOOK_STATUS_MAP = {
+    "pr:opened": "PR_CREATED",
+    "pr:modified": "PR_UPDATED",
+    "pr:reviewer:approved": "PR_APPROVED",
+    "pr:reviewer:needs_work": "PR_NEEDS_WORK",
+    "pr:merged": "COMPLETED",
+    "pr:declined": "PR_DECLINED",
+    "pr:deleted": "PR_DELETED",
+}
+
 
 def response(status_code, body, origin=None):
     headers = {"content-type": "application/json", "vary": "Origin"}
@@ -52,6 +69,63 @@ def frontend_request(item):
     }
 
 
+def trigger_gitops(request_id, payload):
+    """Fire-and-forget invoke of the GitOps Lambda to open the PR for this
+    request. Best-effort: a failure here must not turn an already-persisted
+    request into a 500 for the caller, since the DynamoDB record already
+    exists and can be retried/reconciled independently."""
+    if not gitops_lambda_name:
+        print(f"[GITOPS] GITOPS_LAMBDA_NAME not configured - skipping trigger for {request_id}")
+        return
+    try:
+        lambda_client.invoke(
+            FunctionName=gitops_lambda_name,
+            InvocationType="Event",
+            Payload=json.dumps(
+                {
+                    "request_id": request_id,
+                    "action": "CREATE_PR",
+                    "payload": payload,
+                }
+            ),
+        )
+    except ClientError as error:
+        print(f"[GITOPS] Failed to trigger GitOps lambda for {request_id}: {error}")
+
+
+def handle_webhook(payload, origin=None):
+    event_key = payload.get("eventKey")
+
+    branch_name = (
+        payload.get("pullRequest", {})
+        .get("fromRef", {})
+        .get("displayId", "")
+    )
+
+    if not branch_name or "/" not in branch_name:
+        return response(400, {"message": "Source branch not found"}, origin)
+
+    # gitops/REQ-xxxxxxxx
+    request_id = branch_name.split("/")[-1]
+    status = WEBHOOK_STATUS_MAP.get(event_key, "UNKNOWN")
+    now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        table.update_item(
+            Key={"request_id": request_id},
+            UpdateExpression="SET #s = :s, updatedAt = :u, lastEvent = :e",
+            ConditionExpression="attribute_exists(request_id)",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":s": status, ":u": now, ":e": event_key},
+        )
+    except ClientError as error:
+        if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return response(404, {"message": f"No request found for {request_id}"}, origin)
+        raise
+
+    return response(200, {"requestId": request_id, "status": status}, origin)
+
+
 def handle_request(event):
     method = event["requestContext"]["http"]["method"]
     path = event.get("rawPath", "")
@@ -85,6 +159,8 @@ def handle_request(event):
             if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 return response(409, {"message": "A request with this ID already exists"}, origin)
             raise
+
+        trigger_gitops(request_id, payload)
         return response(201, {"statusCode": 201, "message": "Request received", "requestId": request_id}, origin)
 
     if method == "GET" and path == "/listrequests":
@@ -118,6 +194,13 @@ def handle_request(event):
         request["history"] = [{"status": item["status"], "timestamp": item["createdAt"], "performedBy": "System"}]
         request["comments"] = []
         return response(200, request, origin)
+
+    if method == "POST" and path == "/webhook":
+        try:
+            payload = json.loads(event.get("body") or "{}")
+        except json.JSONDecodeError:
+            return response(400, {"message": "Invalid webhook payload"}, origin)
+        return handle_webhook(payload, origin)
 
     return response(404, {"message": "Route not found"}, origin)
 
