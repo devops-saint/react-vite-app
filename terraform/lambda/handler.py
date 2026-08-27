@@ -16,6 +16,11 @@ allowed_origins = set(json.loads(os.environ.get("CORS_ALLOW_ORIGINS", "[]")))
 lambda_client = boto3.client("lambda")
 gitops_lambda_name = os.environ.get("GITOPS_LAMBDA_NAME")
 
+# Merge notification (optional): if unset, the webhook still updates status
+# as normal, it just won't email the requester.
+ses_client = boto3.client("ses")
+notification_from_email = os.environ.get("NOTIFICATION_FROM_EMAIL", "")
+
 # Webhook -> status mapping (branch format: gitops/REQ-xxxxxxxx)
 WEBHOOK_STATUS_MAP = {
     "pr:opened": "PR_CREATED",
@@ -93,6 +98,43 @@ def trigger_gitops(request_id, payload):
         print(f"[GITOPS] Failed to trigger GitOps lambda for {request_id}: {error}")
 
 
+def notify_requester_merged(item):
+    """Best-effort email to the original requester once their PR has
+    merged. Must never raise: the status is already durably updated in
+    DynamoDB by the time this runs, so a notification failure shouldn't
+    fail the webhook response back to Bitbucket."""
+    request_id = item["request_id"]
+
+    if not notification_from_email:
+        print(f"[NOTIFY] NOTIFICATION_FROM_EMAIL not configured - skipping requester notification for {request_id}")
+        return
+
+    submitted_by = item.get("payload", {}).get("submitted_by", {})
+    to_email = submitted_by.get("email")
+    if not to_email:
+        print(f"[NOTIFY] No requester email on record for {request_id} - skipping notification")
+        return
+
+    subject = f"Your whitelist request {request_id} has been completed"
+    body = (
+        f"Good news - the pull request for your AWS whitelist request has been merged.\n\n"
+        f"Request ID: {request_id}\n"
+        f"Status: COMPLETED\n"
+    )
+
+    try:
+        ses_client.send_email(
+            Source=notification_from_email,
+            Destination={"ToAddresses": [to_email]},
+            Message={
+                "Subject": {"Data": subject},
+                "Body": {"Text": {"Data": body}},
+            },
+        )
+    except ClientError as error:
+        print(f"[NOTIFY] Failed to email requester for {request_id}: {error}")
+
+
 def handle_webhook(payload, origin=None):
     event_key = payload.get("eventKey")
 
@@ -111,17 +153,21 @@ def handle_webhook(payload, origin=None):
     now = datetime.now(timezone.utc).isoformat()
 
     try:
-        table.update_item(
+        updated = table.update_item(
             Key={"request_id": request_id},
             UpdateExpression="SET #s = :s, updatedAt = :u, lastEvent = :e",
             ConditionExpression="attribute_exists(request_id)",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={":s": status, ":u": now, ":e": event_key},
+            ReturnValues="ALL_NEW",
         )
     except ClientError as error:
         if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return response(404, {"message": f"No request found for {request_id}"}, origin)
         raise
+
+    if status == "COMPLETED":
+        notify_requester_merged(updated["Attributes"])
 
     return response(200, {"requestId": request_id, "status": status}, origin)
 

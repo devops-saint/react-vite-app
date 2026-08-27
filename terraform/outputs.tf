@@ -6,3 +6,8 @@ output "api_base_url" {
 output "requests_table_name" {
   value = aws_dynamodb_table.requests.name
 }
+
+output "gitops_lambda_function_name" {
+  description = "Name of the GitOps Lambda (already wired into GITOPS_LAMBDA_NAME on the request-api Lambda)."
+  value       = aws_lambda_function.gitops.function_name
+}

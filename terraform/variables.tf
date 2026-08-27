@@ -45,3 +45,27 @@ variable "log_retention_days" {
   type        = number
   default     = 30
 }
+
+variable "bitbucket_token_secret_name" {
+  description = "Name of the existing Secrets Manager secret holding the Bitbucket access token. Must match the SecretId literal in lambda-gitops/handler.py."
+  type        = string
+  default     = "bitbucket-token"
+}
+
+variable "pr_approver_usernames" {
+  description = "Bitbucket usernames added as reviewers on every GitOps pull request. Leave empty to skip adding reviewers."
+  type        = list(string)
+  default     = []
+}
+
+variable "pr_approver_emails" {
+  description = "Email addresses notified via SES when a GitOps pull request is opened. Not assumed to match pr_approver_usernames one-to-one."
+  type        = list(string)
+  default     = []
+}
+
+variable "notification_from_email" {
+  description = "Verified SES sender identity (email or domain) used for approver and requester notification emails. Leave empty to disable both notifications."
+  type        = string
+  default     = ""
+}

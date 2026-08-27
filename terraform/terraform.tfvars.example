@@ -5,3 +5,15 @@ cors_allow_origins = [
   "http://localhost:5173",
   # "https://portal.example.com",
 ]
+
+# GitOps PR reviewers + notifications (optional - leave empty/unset to disable)
+pr_approver_usernames = [
+  # "jdoe",
+  # "asmith",
+]
+pr_approver_emails = [
+  # "jdoe@example.com",
+  # "asmith@example.com",
+]
+# Must be a verified SES identity (email or domain) in this account/region.
+notification_from_email = ""
