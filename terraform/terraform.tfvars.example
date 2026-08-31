@@ -16,4 +16,10 @@ pr_approver_emails = [
   # "asmith@example.com",
 ]
 # Must be a verified SES identity (email or domain) in this account/region.
-notification_from_email = ""
+domain = ""
+
+# Required - the GitOps Lambda fails on every invocation until these are set.
+bitbucket_url  = "" # e.g. "https://bitbucket.example.com"
+project_key    = "" # e.g. "DPC"
+repo_name      = "" # e.g. "aws-whitelist-config"
+repo_base_path = "" # e.g. "environments" - holds <market>/values.<env>.yaml

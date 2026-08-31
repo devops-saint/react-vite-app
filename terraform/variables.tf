@@ -64,8 +64,32 @@ variable "pr_approver_emails" {
   default     = []
 }
 
-variable "notification_from_email" {
-  description = "Verified SES sender identity (email or domain) used for approver and requester notification emails. Leave empty to disable both notifications."
+variable "domain" {
+  description = "Domain used to build the notification sender address, as noreply@<domain>. Must be a verified SES identity (the domain itself, or that exact address) in this account/region. Leave empty to disable approver and requester notification emails."
+  type        = string
+  default     = ""
+}
+
+variable "bitbucket_url" {
+  description = "REQUIRED. Base URL of the Bitbucket Server instance, e.g. https://bitbucket.example.com. The GitOps Lambda fails on every invocation until this is set."
+  type        = string
+  default     = ""
+}
+
+variable "project_key" {
+  description = "REQUIRED. Bitbucket project key that owns the config repo. The GitOps Lambda fails on every invocation until this is set."
+  type        = string
+  default     = ""
+}
+
+variable "repo_name" {
+  description = "REQUIRED. Bitbucket repository slug holding the per-market environment YAML files. The GitOps Lambda fails on every invocation until this is set."
+  type        = string
+  default     = ""
+}
+
+variable "repo_base_path" {
+  description = "REQUIRED. Path inside the repo under which each market's values.<env>.yaml files live. The GitOps Lambda fails on every invocation until this is set."
   type        = string
   default     = ""
 }

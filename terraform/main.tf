@@ -86,7 +86,7 @@ resource "aws_iam_role_policy" "lambda" {
         Effect = "Allow"
         # UpdateItem is required by the /webhook handler, which advances
         # request status as the linked Bitbucket PR progresses.
-        Action = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem"]
+        Action = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
         Resource = [
           aws_dynamodb_table.requests.arn,
           "${aws_dynamodb_table.requests.arn}/index/submitted-by-created-at",
@@ -129,10 +129,10 @@ resource "aws_lambda_function" "request_api" {
 
   environment {
     variables = {
-      REQUESTS_TABLE          = aws_dynamodb_table.requests.name
-      CORS_ALLOW_ORIGINS      = jsonencode(var.cors_allow_origins)
-      GITOPS_LAMBDA_NAME      = aws_lambda_function.gitops.function_name
-      NOTIFICATION_FROM_EMAIL = var.notification_from_email
+      DYNAMODB_TABLE     = aws_dynamodb_table.requests.name
+      CORS_ALLOW_ORIGINS = jsonencode(var.cors_allow_origins)
+      GITOPS_LAMBDA_NAME = aws_lambda_function.gitops.function_name
+      DOMAIN             = var.domain
     }
   }
 
@@ -206,6 +206,14 @@ resource "aws_iam_role_policy" "gitops_lambda" {
         Resource = data.aws_secretsmanager_secret.bitbucket_token.arn
       },
       {
+        Effect = "Allow"
+        # Needed for the PROMOTE action: PR#<id> lookup items and
+        # LOCK#<branch> claim items, both stored in the same table as
+        # request items under prefixed keys.
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]
+        Resource = aws_dynamodb_table.requests.arn
+      },
+      {
         Effect   = "Allow"
         Action   = ["ses:SendEmail", "ses:SendRawEmail"]
         Resource = "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/*"
@@ -238,9 +246,14 @@ resource "aws_lambda_function" "gitops" {
 
   environment {
     variables = {
-      PR_APPROVER_USERNAMES   = join(",", var.pr_approver_usernames)
-      PR_APPROVER_EMAILS      = join(",", var.pr_approver_emails)
-      NOTIFICATION_FROM_EMAIL = var.notification_from_email
+      DYNAMODB_TABLE         = aws_dynamodb_table.requests.name
+      BITBUCKET_URL          = var.bitbucket_url
+      PROJECT_KEY            = var.project_key
+      REPO_NAME              = var.repo_name
+      REPO_BASE_PATH         = var.repo_base_path
+      PR_APPROVER_USERNAMES  = join(",", var.pr_approver_usernames)
+      PR_APPROVER_EMAILS     = join(",", var.pr_approver_emails)
+      DOMAIN                 = var.domain
     }
   }
 
@@ -281,25 +294,25 @@ resource "aws_apigatewayv2_integration" "request_api" {
 
 resource "aws_apigatewayv2_route" "create_request" {
   api_id    = aws_apigatewayv2_api.requests.id
-  route_key = "POST /request"
+  route_key = "POST /dpc/request"
   target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
 }
 
 resource "aws_apigatewayv2_route" "list_requests" {
   api_id    = aws_apigatewayv2_api.requests.id
-  route_key = "GET /listrequests"
+  route_key = "GET /dpc/listrequests"
   target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
 }
 
 resource "aws_apigatewayv2_route" "request_details" {
   api_id    = aws_apigatewayv2_api.requests.id
-  route_key = "GET /requests/{requestId}"
+  route_key = "GET /dpc/requests/{request_id}"
   target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
 }
 
 resource "aws_apigatewayv2_route" "webhook" {
   api_id    = aws_apigatewayv2_api.requests.id
-  route_key = "POST /webhook"
+  route_key = "POST /dpc/bitbucket/webhook"
   target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
 }
 
