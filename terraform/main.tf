@@ -6,6 +6,12 @@ locals {
     Environment = var.environment
     ManagedBy   = "Terraform"
   }
+
+  # abspath() renders Windows-style paths ("C:\...") when the terraform
+  # binary running this apply is a Windows build - used below so the
+  # gitops layer's local-exec provisioner runs a command the host shell
+  # actually understands, instead of assuming a Unix shell everywhere.
+  is_windows = substr(abspath(path.module), 1, 1) == ":"
 }
 
 data "aws_caller_identity" "current" {}
@@ -154,7 +160,15 @@ resource "null_resource" "gitops_dependencies" {
   }
 
   provisioner "local-exec" {
-    command = "rm -rf ${path.module}/.build/gitops-layer && mkdir -p ${path.module}/.build/gitops-layer/python && pip3 install --upgrade -r ${path.module}/lambda-gitops/requirements.txt -t ${path.module}/.build/gitops-layer/python"
+    # local-exec runs under cmd.exe by default on Windows, which doesn't
+    # understand rm/mkdir -p/&&-chaining - hence the OS-conditional
+    # command and interpreter below (see local.is_windows above). Requires
+    # pip3 (and, on Windows, PowerShell - present by default on all
+    # supported Windows versions) on whatever machine runs `terraform
+    # apply`; both packages themselves are pure Python, so only the
+    # packaging step, not the packages, needs an OS-specific command.
+    interpreter = local.is_windows ? ["PowerShell", "-Command"] : ["/bin/sh", "-c"]
+    command = local.is_windows ? "Remove-Item -Recurse -Force '${path.module}\\.build\\gitops-layer' -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force -Path '${path.module}\\.build\\gitops-layer\\python' | Out-Null; pip3 install --upgrade -r '${path.module}\\lambda-gitops\\requirements.txt' -t '${path.module}\\.build\\gitops-layer\\python'" : "rm -rf ${path.module}/.build/gitops-layer && mkdir -p ${path.module}/.build/gitops-layer/python && pip3 install --upgrade -r ${path.module}/lambda-gitops/requirements.txt -t ${path.module}/.build/gitops-layer/python"
   }
 }
 
@@ -200,7 +214,11 @@ resource "aws_iam_role_policy" "gitops_lambda" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    # The sqs:SendMessage statement is appended only when the DLQ itself
+    # is enabled (var.enable_gitops_dlq) - some AWS orgs block SQS queue
+    # creation via a Service Control Policy, and this keeps the rest of
+    # the stack deployable when that's the case. See aws_sqs_queue.gitops_dlq.
+    Statement = concat([
       {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
@@ -222,18 +240,17 @@ resource "aws_iam_role_policy" "gitops_lambda" {
         Resource = "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/*"
       },
       {
-        Effect = "Allow"
-        # Lambda uses the function's own execution role to write to an
-        # async invoke's on-failure destination.
-        Action   = ["sqs:SendMessage"]
-        Resource = aws_sqs_queue.gitops_dlq.arn
-      },
-      {
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "arn:aws:logs:${var.aws_region}:*:*"
       }
-    ]
+    ], var.enable_gitops_dlq ? [{
+      Effect = "Allow"
+      # Lambda uses the function's own execution role to write to an
+      # async invoke's on-failure destination.
+      Action   = ["sqs:SendMessage"]
+      Resource = aws_sqs_queue.gitops_dlq[0].arn
+    }] : [])
   })
 }
 
@@ -285,17 +302,23 @@ resource "aws_lambda_function" "gitops" {
 # schedule below) is the actual automatic-recovery path; this queue is
 # the visibility/last-resort backstop.
 resource "aws_sqs_queue" "gitops_dlq" {
+  # Some AWS orgs deny sqs:CreateQueue via a Service Control Policy -
+  # var.enable_gitops_dlq lets that org still deploy everything else
+  # (including handle_sweep's automatic retries, which don't need this
+  # queue at all - it's only the last-resort visibility backstop).
+  count                     = var.enable_gitops_dlq ? 1 : 0
   name                      = "${local.name}-gitops-dlq"
   message_retention_seconds = 1209600 # 14 days
   tags                      = local.tags
 }
 
 resource "aws_lambda_function_event_invoke_config" "gitops" {
+  count         = var.enable_gitops_dlq ? 1 : 0
   function_name = aws_lambda_function.gitops.function_name
 
   destination_config {
     on_failure {
-      destination = aws_sqs_queue.gitops_dlq.arn
+      destination = aws_sqs_queue.gitops_dlq[0].arn
     }
   }
 }

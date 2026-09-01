@@ -23,3 +23,11 @@ bitbucket_url  = "" # e.g. "https://bitbucket.example.com"
 project_key    = "" # e.g. "DPC"
 repo_name      = "" # e.g. "aws-whitelist-config"
 repo_base_path = "" # e.g. "environments" - holds <market>/values.<env>.yaml
+
+# Uncomment if `terraform apply` fails with an AccessDenied on
+# sqs:CreateQueue with "explicit deny in a service control policy" -
+# some AWS orgs block SQS via SCP. Nothing else in the stack (including
+# handle_sweep's automatic retries) depends on this queue; only the
+# last-resort manual-inspection visibility for a fully-exhausted retry
+# is lost.
+# enable_gitops_dlq = false

@@ -99,3 +99,9 @@ variable "sweep_schedule_expression" {
   type        = string
   default     = "rate(10 minutes)"
 }
+
+variable "enable_gitops_dlq" {
+  description = "Whether to create the gitops_dlq SQS queue (and the Lambda on-failure destination pointing at it). Some AWS orgs deny sqs:CreateQueue via a Service Control Policy - set this to false in that case. handle_sweep's automatic retry sweep does not depend on this queue at all; only the last-resort manual-inspection visibility for an event that exhausted every retry (in-function and Lambda's own built-in async retries) is lost when this is false."
+  type        = bool
+  default     = true
+}
