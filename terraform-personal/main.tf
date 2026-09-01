@@ -10,10 +10,10 @@ locals {
 
 data "aws_caller_identity" "current" {}
 
-# Looked up, not managed here - the Bitbucket token is created out of band.
-# Its name must match the SecretId literal in lambda-gitops/handler.py.
-data "aws_secretsmanager_secret" "bitbucket_token" {
-  name = var.bitbucket_token_secret_name
+# Looked up, not managed here - the GitHub token is created out of band.
+# Its name must match the SecretId literal in lambda-gitops-personal/handler.py.
+data "aws_secretsmanager_secret" "github_token" {
+  name = var.github_token_secret_name
 }
 
 resource "aws_dynamodb_table" "requests" {
@@ -56,7 +56,7 @@ resource "aws_dynamodb_table" "requests" {
 
 data "archive_file" "request_api" {
   type        = "zip"
-  source_dir  = "${path.module}/lambda"
+  source_dir  = "${path.module}/lambda-personal"
   output_path = "${path.module}/.build/request_api.zip"
   excludes    = ["__pycache__"]
 }
@@ -67,9 +67,9 @@ resource "aws_iam_role" "lambda" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
+      Effect    = "Allow"
       Principal = { Service = "lambda.amazonaws.com" }
-      Action = "sts:AssumeRole"
+      Action    = "sts:AssumeRole"
     }]
   })
 
@@ -85,8 +85,8 @@ resource "aws_iam_role_policy" "lambda" {
     Statement = [
       {
         Effect = "Allow"
-        # UpdateItem is required by the /webhook handler, which advances
-        # request status as the linked Bitbucket PR progresses.
+        # DeleteItem is required to release a resolved promotion's
+        # LOCK#<branch> item once its PR merges/is declined/is closed.
         Action = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
         Resource = [
           aws_dynamodb_table.requests.arn,
@@ -104,8 +104,8 @@ resource "aws_iam_role_policy" "lambda" {
         Resource = "arn:aws:ses:${var.aws_region}:${data.aws_caller_identity.current.account_id}:identity/*"
       },
       {
-        Effect = "Allow"
-        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "arn:aws:logs:${var.aws_region}:*:*"
       }
     ]
@@ -133,7 +133,10 @@ resource "aws_lambda_function" "request_api" {
       DYNAMODB_TABLE     = aws_dynamodb_table.requests.name
       CORS_ALLOW_ORIGINS = jsonencode(var.cors_allow_origins)
       GITOPS_LAMBDA_NAME = aws_lambda_function.gitops.function_name
-      DOMAIN             = var.domain
+      # No verified SES domain for personal testing - leave var.domain
+      # unset. Every notify_* function no-ops on its own; nothing else
+      # needs to change.
+      DOMAIN = var.domain
     }
   }
 
@@ -142,19 +145,16 @@ resource "aws_lambda_function" "request_api" {
 }
 
 # =====================================================
-# GitOps Lambda (branch/commit/PR + reviewer + approver notification)
+# GitOps Lambda (GitHub instead of Bitbucket Server)
 # =====================================================
 
-# requests + ruamel.yaml aren't in the Lambda Python runtime, so they're
-# packaged as a layer. Requires pip3 on whatever machine runs `terraform
-# apply` - both packages are pure Python, so this is platform-independent.
 resource "null_resource" "gitops_dependencies" {
   triggers = {
-    requirements_hash = filemd5("${path.module}/lambda-gitops/requirements.txt")
+    requirements_hash = filemd5("${path.module}/lambda-gitops-personal/requirements.txt")
   }
 
   provisioner "local-exec" {
-    command = "rm -rf ${path.module}/.build/gitops-layer && mkdir -p ${path.module}/.build/gitops-layer/python && pip3 install --upgrade -r ${path.module}/lambda-gitops/requirements.txt -t ${path.module}/.build/gitops-layer/python"
+    command = "rm -rf ${path.module}/.build/gitops-layer && mkdir -p ${path.module}/.build/gitops-layer/python && pip3 install --upgrade -r ${path.module}/lambda-gitops-personal/requirements.txt -t ${path.module}/.build/gitops-layer/python"
   }
 }
 
@@ -174,7 +174,7 @@ resource "aws_lambda_layer_version" "gitops_dependencies" {
 
 data "archive_file" "gitops" {
   type        = "zip"
-  source_dir  = "${path.module}/lambda-gitops"
+  source_dir  = "${path.module}/lambda-gitops-personal"
   output_path = "${path.module}/.build/gitops.zip"
   excludes    = ["requirements.txt", "__pycache__", "_to_delete"]
 }
@@ -204,15 +204,14 @@ resource "aws_iam_role_policy" "gitops_lambda" {
       {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = data.aws_secretsmanager_secret.bitbucket_token.arn
+        Resource = data.aws_secretsmanager_secret.github_token.arn
       },
       {
         Effect = "Allow"
-        # Needed for the PROMOTE action: PR#<id> lookup items and
-        # LOCK#<branch> claim items, both stored in the same table as
-        # request items under prefixed keys. Scan is for handle_sweep,
-        # which finds stuck SYNC_FAILED requests and FAILED/stuck-
-        # CLAIMING locks to retry.
+        # PR#<id> lookup items and LOCK#<branch> claim items, stored in
+        # the same table as request items under prefixed keys. Scan is
+        # for handle_sweep, which finds stuck SYNC_FAILED requests and
+        # FAILED/stuck-CLAIMING locks to retry.
         Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Scan"]
         Resource = aws_dynamodb_table.requests.arn
       },
@@ -253,21 +252,20 @@ resource "aws_lambda_function" "gitops" {
   layers           = [aws_lambda_layer_version.gitops_dependencies.arn]
   # 240s gives headroom for _request_with_retry's worst case (3 attempts
   # at the longest per-call timeout, 60s, plus backoff) on a single
-  # Bitbucket call - execution stops at the first call that exhausts
+  # GitHub call - execution stops at the first call that exhausts
   # retries, so this bounds one invocation, not the sum of every call.
   timeout          = 240
   memory_size      = 256
 
   environment {
     variables = {
-      DYNAMODB_TABLE         = aws_dynamodb_table.requests.name
-      BITBUCKET_URL          = var.bitbucket_url
-      PROJECT_KEY            = var.project_key
-      REPO_NAME              = var.repo_name
-      REPO_BASE_PATH         = var.repo_base_path
-      PR_APPROVER_USERNAMES  = join(",", var.pr_approver_usernames)
-      PR_APPROVER_EMAILS     = join(",", var.pr_approver_emails)
-      DOMAIN                 = var.domain
+      DYNAMODB_TABLE        = aws_dynamodb_table.requests.name
+      GITHUB_OWNER          = var.github_owner
+      GITHUB_REPO           = var.github_repo
+      REPO_BASE_PATH        = var.repo_base_path
+      PR_APPROVER_USERNAMES = join(",", var.pr_approver_usernames)
+      PR_APPROVER_EMAILS    = join(",", var.pr_approver_emails)
+      DOMAIN                = var.domain
     }
   }
 
@@ -278,7 +276,7 @@ resource "aws_lambda_function" "gitops" {
 # =====================================================
 # GitOps Lambda resilience: on-failure destination + retry sweep
 # =====================================================
-# If a Bitbucket outage outlasts _request_with_retry's in-function
+# If a GitHub/Bitbucket outage outlasts _request_with_retry's in-function
 # retries AND Lambda's own built-in async retries (2 more, over several
 # minutes), the failed event lands here instead of being silently
 # dropped - useful for manual inspection. handle_sweep (triggered on the
@@ -303,10 +301,10 @@ resource "aws_lambda_function_event_invoke_config" "gitops" {
 # Periodically retries anything handle_create_pr/handle_promote left in
 # SYNC_FAILED (initial PR never opened) or with a promotion LOCK stuck
 # FAILED/CLAIMING (promotion PR never opened) - see handle_sweep in
-# lambda-gitops/handler.py for the actual retry logic.
+# lambda-gitops-personal/handler.py for the actual retry logic.
 resource "aws_cloudwatch_event_rule" "gitops_sweep" {
   name                = "${local.name}-gitops-sweep"
-  description         = "Retries Bitbucket syncs that failed during an outage/maintenance window"
+  description         = "Retries GitHub syncs that failed during an outage/maintenance window"
   schedule_expression = var.sweep_schedule_expression
   tags                = local.tags
 }
@@ -341,8 +339,6 @@ resource "aws_apigatewayv2_api" "requests" {
   tags = local.tags
 }
 
-# A $default stage is served at the API base URL, with no /stage-name segment.
-# auto_deploy ensures route and CORS updates are released with terraform apply.
 resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.requests.id
   name        = "$default"
@@ -376,9 +372,12 @@ resource "aws_apigatewayv2_route" "request_details" {
   target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
 }
 
+# GitHub webhooks are configured to POST here (Settings -> Webhooks on the
+# personal config repo). Note the path differs from org's
+# /dpc/bitbucket/webhook - this is /dpc/github/webhook.
 resource "aws_apigatewayv2_route" "webhook" {
   api_id    = aws_apigatewayv2_api.requests.id
-  route_key = "POST /dpc/bitbucket/webhook"
+  route_key = "POST /dpc/github/webhook"
   target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
 }
 

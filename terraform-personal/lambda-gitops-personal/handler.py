@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import time
@@ -28,13 +29,14 @@ sm = session.client(
 ses = session.client(
     "ses"
 )
+
 # =====================================================
-# CONFIG
+# CONFIG (GitHub instead of Bitbucket Server)
 # =====================================================
 
-BITBUCKET_URL = os.environ["BITBUCKET_URL"]
-PROJECT_KEY = os.environ["PROJECT_KEY"]
-REPO_SLUG = os.environ["REPO_NAME"]
+GITHUB_API_URL = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+GITHUB_OWNER = os.environ["GITHUB_OWNER"]
+GITHUB_REPO = os.environ["GITHUB_REPO"]
 
 SOURCE_BRANCH = "dev"
 
@@ -47,24 +49,26 @@ SUPPORTED_SECTIONS = [
     "functions"
 ]
 
-from ruamel.yaml import YAML
-
 yaml_parser = YAML()
 yaml_parser.preserve_quotes = True
 yaml_parser.default_flow_style = False
 
-# Preserve standard YAML indentation
 yaml_parser.indent(
     mapping=2,
     sequence=4,
     offset=2
 )
 
-GIT_TOKEN = ""
+GITHUB_TOKEN = ""
 
 # =====================================================
 # APPROVERS / NOTIFICATIONS CONFIG
 # =====================================================
+# No verified SES domain for personal testing - leave DOMAIN unset in
+# terraform.tfvars and every notify_* function below no-ops on its own
+# (see the `if not NOTIFICATION_FROM_EMAIL` guards). Nothing else to
+# change: approvals/reviewers still work via PR_APPROVER_USERNAMES even
+# with notifications off.
 
 PR_APPROVER_USERNAMES = [
     name.strip()
@@ -77,7 +81,7 @@ PR_APPROVER_EMAILS = [
     for email in os.environ.get("PR_APPROVER_EMAILS", "").split(",")
     if email.strip()
 ]
-# Verified SES sender identity (or domain) required for send_email to work.
+
 DOMAIN = os.environ.get("DOMAIN")
 
 NOTIFICATION_FROM_EMAIL = (
@@ -87,8 +91,6 @@ NOTIFICATION_FROM_EMAIL = (
 # =====================================================
 # PROMOTION PIPELINE (dev -> qa -> master)
 # =====================================================
-# Only needed for the PROMOTE action below - looked up lazily so a missing
-# DYNAMODB_TABLE env var can never break the existing CREATE_PR path.
 _DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE")
 _dynamodb_table = None
 
@@ -107,12 +109,13 @@ def _table():
 
 def get_headers():
     return {
-        "Authorization": f"Bearer {GIT_TOKEN}",
-        "Accept": "application/json"
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
     }
 
 # =====================================================
-# BITBUCKET REQUEST HELPER
+# GITHUB REQUEST HELPER
 # =====================================================
 
 def check_response(response, operation):
@@ -125,13 +128,13 @@ def check_response(response, operation):
     response.raise_for_status()
 
 # =====================================================
-# RETRY / RESILIENCE (Bitbucket down-for-maintenance handling)
+# RETRY / RESILIENCE (GitHub down-for-maintenance handling)
 # =====================================================
-# Applies to every Bitbucket API call this Lambda makes. Retries
-# transient failures (connection errors, timeouts, 429/5xx) with a
-# short backoff so a brief outage/maintenance window doesn't
-# immediately fail the whole sync. 4xx errors are never retried here -
-# they won't succeed on a retry and would just waste the budget.
+# Applies to every GitHub API call this Lambda makes. Retries transient
+# failures (connection errors, timeouts, 429/5xx) with a short backoff
+# so a brief outage/maintenance window doesn't immediately fail the
+# whole sync. 4xx errors are never retried here - they won't succeed on
+# a retry and would just waste the budget.
 
 MAX_HTTP_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = [2, 5]
@@ -168,9 +171,8 @@ def _request_with_retry(method, url, *, operation, **kwargs):
 def get_latest_commit(branch_name):
 
     url = (
-        f"{BITBUCKET_URL}"
-        f"/rest/api/latest/projects/{PROJECT_KEY}"
-        f"/repos/{REPO_SLUG}/branches"
+        f"{GITHUB_API_URL}/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+        f"/git/ref/heads/{branch_name}"
     )
 
     response = _request_with_retry(
@@ -178,35 +180,27 @@ def get_latest_commit(branch_name):
         url,
         operation=f"Get branch: {branch_name}",
         headers=get_headers(),
-        params={"filterText": branch_name},
         timeout=30
     )
 
     check_response(response, f"Get branch: {branch_name}")
 
-    branches = response.json().get("values", [])
-
-    for branch in branches:
-        if branch["displayId"] == branch_name:
-            return branch["latestCommit"]
-
-    raise Exception(f"Branch {branch_name} not found")
+    return response.json()["object"]["sha"]
 
 # =====================================================
 # CREATE BRANCH
 # =====================================================
 
-def create_branch(branch_name, commit_hash):
+def create_branch(branch_name, commit_sha):
 
     url = (
-        f"{BITBUCKET_URL}"
-        f"/rest/api/latest/projects/{PROJECT_KEY}"
-        f"/repos/{REPO_SLUG}/branches"
+        f"{GITHUB_API_URL}/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+        f"/git/refs"
     )
 
     payload = {
-        "name": f"refs/heads/{branch_name}",
-        "startPoint": commit_hash
+        "ref": f"refs/heads/{branch_name}",
+        "sha": commit_sha
     }
 
     response = _request_with_retry(
@@ -221,7 +215,7 @@ def create_branch(branch_name, commit_hash):
         timeout=30
     )
 
-    if response.status_code == 409 and "already exists" in response.text.lower():
+    if response.status_code == 422 and "already exists" in response.text.lower():
         # Idempotent: a retry (Lambda's built-in retry, or the SWEEP
         # action) after a prior attempt that created this branch but
         # failed on a later step. Nothing to do - keep going.
@@ -231,10 +225,10 @@ def create_branch(branch_name, commit_hash):
     check_response(response, f"Create branch: {branch_name}")
 
 # =====================================================
-# GET FILE CONTENT
+# GET FILE (content + blob sha, one call on GitHub)
 # =====================================================
 
-def get_file_content(branch_name, file_path):
+def get_file(branch_name, file_path):
 
     encoded_path = urllib.parse.quote(
         file_path,
@@ -242,10 +236,8 @@ def get_file_content(branch_name, file_path):
     )
 
     url = (
-        f"{BITBUCKET_URL}"
-        f"/rest/api/latest/projects/{PROJECT_KEY}"
-        f"/repos/{REPO_SLUG}"
-        f"/raw/{encoded_path}"
+        f"{GITHUB_API_URL}/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+        f"/contents/{encoded_path}"
     )
 
     response = _request_with_retry(
@@ -253,54 +245,19 @@ def get_file_content(branch_name, file_path):
         url,
         operation=f"Get file: {file_path}",
         headers=get_headers(),
-        params={"at": f"refs/heads/{branch_name}"},
+        params={"ref": branch_name},
         timeout=30
     )
 
     check_response(response, f"Get file: {file_path}")
 
-    return response.text
+    data = response.json()
+    content = base64.b64decode(data["content"]).decode("utf-8")
+    return content, data["sha"]
 
 # =====================================================
-# GET FILE LAST COMMIT
-# =====================================================
-
-def get_file_last_commit(branch_name, file_path):
-
-    url = (
-        f"{BITBUCKET_URL}"
-        f"/rest/api/latest/projects/{PROJECT_KEY}"
-        f"/repos/{REPO_SLUG}"
-        f"/commits"
-    )
-
-    response = _request_with_retry(
-        "GET",
-        url,
-        operation=f"Get last modified commit: {file_path}",
-        headers=get_headers(),
-        params={
-            "until": f"refs/heads/{branch_name}",
-            "path": file_path,
-            "limit": 1
-        },
-        timeout=30
-    )
-
-    check_response(
-        response,
-        f"Get last modified commit: {file_path}"
-    )
-
-    values = response.json().get("values", [])
-
-    if not values:
-        return None
-
-    return values[0].get("id")
-
-# =====================================================
-# UPDATE YAML DATA
+# UPDATE YAML DATA (identical to the Bitbucket version -
+# git-host-agnostic)
 # =====================================================
 
 def update_yaml_data(yaml_data, env_payload):
@@ -374,7 +331,7 @@ def process_yaml_updates(
             f"\nReading file: {file_path}"
         )
 
-        content = get_file_content(
+        content, blob_sha = get_file(
             branch_name,
             file_path
         )
@@ -436,7 +393,8 @@ def process_yaml_updates(
         updated_files.append(
             {
                 "file_path": file_path,
-                "content": updated_content
+                "content": updated_content,
+                "sha": blob_sha,
             }
         )
 
@@ -451,6 +409,7 @@ def commit_file(
     branch_name,
     file_path,
     content,
+    blob_sha,
     commit_message
 ):
 
@@ -460,40 +419,26 @@ def commit_file(
     )
 
     url = (
-        f"{BITBUCKET_URL}"
-        f"/rest/api/latest/projects/{PROJECT_KEY}"
-        f"/repos/{REPO_SLUG}"
-        f"/browse/{encoded_path}"
+        f"{GITHUB_API_URL}/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+        f"/contents/{encoded_path}"
     )
 
-    source_commit_id = get_file_last_commit(
-        branch_name,
-        file_path
-    )
-
-    files = {
-        "content": (
-            file_path.split("/")[-1],
-            content,
-            "text/plain"
-        )
-    }
-
-    data = {
+    payload = {
         "message": commit_message,
-        "branch": branch_name
+        "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        "branch": branch_name,
+        "sha": blob_sha,
     }
-
-    if source_commit_id:
-        data["sourceCommitId"] = source_commit_id
 
     response = _request_with_retry(
         "PUT",
         url,
         operation=f"Commit file: {file_path}",
-        headers=get_headers(),
-        files=files,
-        data=data,
+        headers={
+            **get_headers(),
+            "Content-Type": "application/json"
+        },
+        json=payload,
         timeout=60
     )
 
@@ -526,14 +471,15 @@ def commit_files(
             branch_name=branch_name,
             file_path=file["file_path"],
             content=file["content"],
+            blob_sha=file["sha"],
             commit_message=commit_message
         )
 
         commit_results.append(
             {
                 "file_path": file["file_path"],
-                "commit_id": result.get("id"),
-                "commit_message": result.get("message")
+                "commit_id": result.get("commit", {}).get("sha"),
+                "commit_message": commit_message,
             }
         )
 
@@ -543,65 +489,45 @@ def commit_files(
 # CREATE PULL REQUEST
 # =====================================================
 
-def _find_existing_pull_request(from_ref, to_ref):
-    """Looks up an already-open PR for this from/to ref pair - a
-    fallback for when create_pull_request hits Bitbucket Server's 409
-    "duplicate pull request" but the error body didn't include
-    existingPullRequest for some reason. Happens when a retry (Lambda's
-    built-in retry, or the SWEEP action) runs handle_create_pr/
-    handle_promote again after a prior attempt already opened the PR
-    but failed on a later step."""
-    url = (
-        f"{BITBUCKET_URL}"
-        f"/rest/api/latest/projects/{PROJECT_KEY}"
-        f"/repos/{REPO_SLUG}"
-        f"/pull-requests"
-    )
+def _find_existing_pull_request(head_branch, base_branch):
+    """Looks up an already-open PR for this head/base pair. Used when
+    create_pull_request hits GitHub's "A pull request already exists"
+    422 - happens when a retry (Lambda's built-in retry, or the SWEEP
+    action) runs handle_create_pr/handle_promote again after a prior
+    attempt already opened the PR but failed on a later step."""
+    url = f"{GITHUB_API_URL}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/pulls"
     response = _request_with_retry(
         "GET",
         url,
-        operation=f"Find existing PR for {from_ref} -> {to_ref}",
+        operation=f"Find existing PR for {head_branch} -> {base_branch}",
         headers=get_headers(),
-        params={"direction": "OUTGOING", "at": f"refs/heads/{from_ref}", "state": "OPEN"},
+        params={"head": f"{GITHUB_OWNER}:{head_branch}", "base": base_branch, "state": "open"},
         timeout=30,
     )
-    check_response(response, f"Find existing PR for {from_ref} -> {to_ref}")
-    for pr in response.json().get("values", []):
-        if pr.get("toRef", {}).get("displayId") == to_ref:
-            return pr
-    return None
+    check_response(response, f"Find existing PR for {head_branch} -> {base_branch}")
+    results = response.json()
+    return results[0] if results else None
 
 
-def create_pull_request(from_ref, to_ref=None, title=None, description=None):
-    """`from_ref`/`to_ref` are branch display ids (e.g. "gitops/REQ-1234",
-    "dev", "qa"). `to_ref` defaults to SOURCE_BRANCH so every existing
-    call site (`create_pull_request(branch_name)`) keeps working exactly
-    as before."""
+def create_pull_request(head_branch, base_branch=None, title=None, body=None):
+    """`head_branch`/`base_branch` are branch names (e.g. "gitops/REQ-1234",
+    "dev", "qa"). `base_branch` defaults to SOURCE_BRANCH so every existing
+    call site keeps working exactly as before."""
 
-    to_ref = to_ref or SOURCE_BRANCH
+    base_branch = base_branch or SOURCE_BRANCH
 
     url = (
-        f"{BITBUCKET_URL}"
-        f"/rest/api/latest/projects/{PROJECT_KEY}"
-        f"/repos/{REPO_SLUG}"
-        f"/pull-requests"
+        f"{GITHUB_API_URL}/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+        f"/pulls"
     )
 
     payload = {
-        "title": title or f"GitOps Update {from_ref}",
-        "description": description or "Automated GitOps update created by Lambda.",
-        "fromRef": {
-            "id": f"refs/heads/{from_ref}"
-        },
-        "toRef": {
-            "id": f"refs/heads/{to_ref}"
-        }
+        "title": title or f"GitOps Update {head_branch}",
+        "body": body or "Automated GitOps update created by Lambda.",
+        "head": head_branch,
+        "base": base_branch,
     }
-    if PR_APPROVER_USERNAMES:
-        payload["reviewers"] = [
-            {"user": {"name": username}}
-            for username in PR_APPROVER_USERNAMES
-        ]
+
     response = _request_with_retry(
         "POST",
         url,
@@ -614,34 +540,55 @@ def create_pull_request(from_ref, to_ref=None, title=None, description=None):
         timeout=30
     )
 
-    if response.status_code == 409:
+    if response.status_code == 422 and "already exists" in response.text.lower():
         # Idempotent: a retry after a prior attempt already opened this
-        # exact PR but failed on a later step. Bitbucket Server's 409
-        # duplicate-PR error usually embeds the existing PR directly in
-        # the error body; fall back to a search if it doesn't.
-        try:
-            errors = response.json().get("errors", [])
-        except ValueError:
-            errors = []
-
-        existing = next((err["existingPullRequest"] for err in errors if err.get("existingPullRequest")), None)
-        is_duplicate_error = existing is not None or any(
-            "duplicate" in err.get("exceptionName", "").lower() for err in errors
+        # exact PR but failed on a later step (e.g. writing the PR#<id>
+        # lookup record, or notifying approvers). Reuse the existing PR
+        # instead of failing.
+        existing = _find_existing_pull_request(head_branch, base_branch)
+        if existing:
+            print(f"[IDEMPOTENT] PR already exists for {head_branch} -> {base_branch}: reusing #{existing.get('number')}")
+            pr = existing
+        else:
+            check_response(response, "Create pull request")
+            pr = response.json()
+    else:
+        check_response(
+            response,
+            "Create pull request"
         )
+        pr = response.json()
 
-        if is_duplicate_error:
-            if existing is None:
-                existing = _find_existing_pull_request(from_ref, to_ref)
-            if existing:
-                print(f"[IDEMPOTENT] PR already exists for {from_ref} -> {to_ref}: reusing #{existing.get('id')}")
-                return existing
+    # GitHub adds reviewers via a separate call (unlike Bitbucket, which
+    # takes them in the create-PR payload) - best-effort, must not fail
+    # PR creation itself if it errors (including a connection error, not
+    # just an HTTP error - broadened from the original except clause,
+    # which only caught HTTPError and would otherwise let a GitHub
+    # outage here fail the whole PR creation despite the PR already
+    # existing).
+    if PR_APPROVER_USERNAMES:
+        try:
+            reviewers_url = (
+                f"{GITHUB_API_URL}/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+                f"/pulls/{pr['number']}/requested_reviewers"
+            )
+            rresponse = _request_with_retry(
+                "POST",
+                reviewers_url,
+                operation="Add reviewers",
+                headers={
+                    **get_headers(),
+                    "Content-Type": "application/json"
+                },
+                json={"reviewers": PR_APPROVER_USERNAMES},
+                timeout=30
+            )
+            check_response(rresponse, "Add reviewers")
+        except Exception as error:
+            print(f"[REVIEWERS] Failed to add reviewers to PR #{pr['number']}: {error}")
 
-    check_response(
-        response,
-        "Create pull request"
-    )
+    return pr
 
-    return response.json()
 # =====================================================
 # NOTIFY APPROVERS (PR CREATED)
 # =====================================================
@@ -652,16 +599,12 @@ def notify_approvers_pr_created(pr, payload):
         print(f"[NOTIFY] PR_APPROVER_EMAILS not configured - skipping approver notification for {request_id}")
         return
     if not NOTIFICATION_FROM_EMAIL:
-        print(f"[NOTIFY] NOTIFICATION_FROM_EMAIL not configured - skipping approver notification for {request_id}")
+        print(f"[NOTIFY] NOTIFICATION_FROM_EMAIL not configured (no DOMAIN set) - skipping approver notification for {request_id}")
         return
 
     market_code = payload.get("market_code", "unknown")
     submitted_by = payload.get("submitted_by", {})
-    pr_url = (
-        pr.get("links", {})
-        .get("self", [{}])[0]
-        .get("href", "")
-    )
+    pr_url = pr.get("html_url", "")
 
     subject = f"[Action required] Review PR for whitelist request {request_id}"
     body = (
@@ -690,14 +633,10 @@ def notify_approvers_promotion_created(pr, promotion_id, request_ids, to_branch)
         print(f"[NOTIFY] PR_APPROVER_EMAILS not configured - skipping approver notification for {promotion_id}")
         return
     if not NOTIFICATION_FROM_EMAIL:
-        print(f"[NOTIFY] NOTIFICATION_FROM_EMAIL not configured - skipping approver notification for {promotion_id}")
+        print(f"[NOTIFY] NOTIFICATION_FROM_EMAIL not configured (no DOMAIN set) - skipping approver notification for {promotion_id}")
         return
 
-    pr_url = (
-        pr.get("links", {})
-        .get("self", [{}])[0]
-        .get("href", "")
-    )
+    pr_url = pr.get("html_url", "")
 
     subject = f"[Action required] Review promotion to {to_branch.upper()} ({promotion_id})"
     body = (
@@ -720,7 +659,7 @@ def notify_approvers_promotion_created(pr, promotion_id, request_ids, to_branch)
         print(f"[NOTIFY] Failed to email approvers for {promotion_id}: {error}")
 
 # =====================================================
-# CREATE_PR ACTION (original per-request flow, unchanged)
+# CREATE_PR ACTION (original per-request flow)
 # =====================================================
 
 def handle_create_pr(event):
@@ -759,6 +698,22 @@ def handle_create_pr(event):
     pr = create_pull_request(
         branch_name
     )
+    pr_id = pr.get("number")
+
+    try:
+        dynamo_table = _table()
+        dynamo_table.put_item(Item={
+            "request_id": f"PR#{pr_id}",
+            "type": "initial",
+            "request_ids": [request_id],
+        })
+    except Exception as error:
+        # Best-effort: a lookup-record failure must not fail a PR that
+        # already exists on GitHub. Without this record, decline/approve
+        # comments on the initial PR just won't correlate back to the
+        # request - the PR itself is unaffected.
+        print(f"[PR#] Failed to write lookup record for PR #{pr_id}: {error}")
+
     notify_approvers_pr_created(
         pr,
         payload
@@ -770,12 +725,10 @@ def handle_create_pr(event):
         "source_branch": SOURCE_BRANCH,
         "commits": commit_results,
         "pull_request": {
-            "id": pr.get("id"),
+            "id": pr.get("number"),
             "title": pr.get("title"),
             "state": pr.get("state"),
-            "url": pr.get("links", {})
-            .get("self", [{}])[0]
-            .get("href")
+            "url": pr.get("html_url"),
         }
     }
 
@@ -814,27 +767,21 @@ def _append_history(dynamo_table, request_id, comments, now):
 
 
 def handle_promote(event):
-    """Opens a plain branch-to-branch PR (no new commits) between two
-    persistent environment branches, and records which request ids ride
-    on it so the webhook can advance/complete them when it resolves."""
     promotion_id = event["promotion_id"]
     from_branch = event["from_branch"]
     to_branch = event["to_branch"]
     lock_key = event["lock_key"]
 
     pr = create_pull_request(
-        from_ref=from_branch,
-        to_ref=to_branch,
+        head_branch=from_branch,
+        base_branch=to_branch,
         title=f"Promote {from_branch} -> {to_branch} ({promotion_id})",
-        description=f"Automated promotion PR.\nPromotion ID: {promotion_id}",
+        body=f"Automated promotion PR.\nPromotion ID: {promotion_id}",
     )
-    pr_id = pr.get("id")
+    pr_id = pr.get("number")
 
     dynamo_table = _table()
 
-    # Anyone who joined the lock between it being claimed and this PR
-    # actually opening rides along automatically - Bitbucket's diff for a
-    # branch-to-branch PR is live, not a frozen snapshot.
     lock_item = dynamo_table.get_item(Key={"request_id": lock_key}).get("Item", {})
     request_ids = lock_item.get("request_ids", [])
 
@@ -881,12 +828,10 @@ def handle_promote(event):
         "to_branch": to_branch,
         "request_ids": request_ids,
         "pull_request": {
-            "id": pr.get("id"),
+            "id": pr.get("number"),
             "title": pr.get("title"),
             "state": pr.get("state"),
-            "url": pr.get("links", {})
-            .get("self", [{}])[0]
-            .get("href")
+            "url": pr.get("html_url"),
         }
     }
 
@@ -894,7 +839,7 @@ def handle_promote(event):
 # =====================================================
 # FAILURE REPORTING + AUTOMATIC RETRY SWEEP
 # =====================================================
-# If Bitbucket stays unreachable through _request_with_retry's whole
+# If GitHub stays unreachable through _request_with_retry's whole
 # budget, handle_create_pr/handle_promote's exception reaches
 # lambda_handler, which records it here (so the UI shows SYNC_FAILED /
 # a promotion LOCK stops silently blocking future promotions) and
@@ -932,12 +877,12 @@ def _scan(dynamo_table, filter_expression):
 
 
 def _mark_request_sync_failed(dynamo_table, request_id, error):
-    """Best-effort: records that syncing this request to Bitbucket
-    failed, so the UI shows SYNC_FAILED instead of the request silently
-    hanging at REQUEST_RECEIVED forever, and so handle_sweep knows to
-    retry it. A later successful retry naturally overwrites `status`
-    again via the normal pr:opened webhook path - nothing here needs to
-    "undo" this on success."""
+    """Best-effort: records that syncing this request to GitHub failed,
+    so the UI shows SYNC_FAILED instead of the request silently hanging
+    at REQUEST_RECEIVED forever, and so handle_sweep knows to retry it.
+    A later successful retry naturally overwrites `status` again via
+    the normal pr:opened webhook path - nothing here needs to "undo"
+    this on success."""
     now = datetime.now(timezone.utc).isoformat()
     try:
         dynamo_table.update_item(
@@ -957,7 +902,7 @@ def _mark_request_sync_failed(dynamo_table, request_id, error):
                     "status": "SYNC_FAILED",
                     "timestamp": now,
                     "performedBy": "System",
-                    "comments": f"Bitbucket sync failed: {str(error)[:500]}",
+                    "comments": f"GitHub sync failed: {str(error)[:500]}",
                 }],
                 ":empty_list": [],
                 ":one": 1,
@@ -1121,16 +1066,16 @@ def handle_sweep(event, context=None):
 def lambda_handler(event, context):
     print(event)
 
-    global GIT_TOKEN
+    global GITHUB_TOKEN
 
     secret = sm.get_secret_value(
-        SecretId="bitbucket-token"
+        SecretId="github-token"
     )
 
-    GIT_TOKEN = secret["SecretString"].strip()
+    GITHUB_TOKEN = secret["SecretString"].strip()
 
-    if not GIT_TOKEN:
-        raise Exception("Bitbucket token is empty")
+    if not GITHUB_TOKEN:
+        raise Exception("GitHub token is empty")
 
     action = event.get("action", "CREATE_PR")
 

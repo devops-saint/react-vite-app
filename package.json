@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node node_modules/vite/bin/vite.js",
+    "dev:personal": "node node_modules/vite/bin/vite.js --mode personal",
     "build": "node node_modules/vite/bin/vite.js build",
     "preview": "node node_modules/vite/bin/vite.js preview",
     "lint": "node node_modules/eslint/bin/eslint.js . --max-warnings 0",

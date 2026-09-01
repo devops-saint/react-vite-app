@@ -1,5 +1,7 @@
 # Request API infrastructure
 
+**Full setup guide (fast-path script + manual steps + UI setup): see [`SETUP.md`](./SETUP.md).**
+
 This Terraform stack provisions an API Gateway HTTP API, one Python Lambda function, and a DynamoDB table for the whitelist portal.
 
 The HTTP API uses an explicit `$default` stage with automatic deployments. Its invoke URL intentionally has no `/dev` or `/prod` path segment.

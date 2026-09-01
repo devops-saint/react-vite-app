@@ -3,3 +3,8 @@
 *.tfstate
 *.tfstate.*
 .build/
+
+# Real Bitbucket URL/project/repo values (and any credentials someone
+# adds here later) - only the .example template belongs in git.
+*.tfvars
+!*.tfvars.example

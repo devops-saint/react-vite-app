@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -18,11 +19,15 @@ gitops_lambda_name = os.environ.get("GITOPS_LAMBDA_NAME")
 ses_client = boto3.client("ses")
 DOMAIN = os.environ.get("DOMAIN")
 
+# No verified SES domain for personal testing - leave DOMAIN unset and
+# notify_requester_merged below no-ops on its own. Nothing else to change.
 notification_from_email = (
     f"noreply@{DOMAIN}" if DOMAIN else None
 )
 
-# Webhook -> status mapping (branch format: gitops/REQ-xxxxxxxx)
+# Internal status vocabulary - identical to the Bitbucket/org Lambda.
+# GitHub events are normalised into these same keys in handle_webhook
+# below, so every function past that point is unchanged from org.
 WEBHOOK_STATUS_MAP = {
     "pr:opened": "PR_CREATED",
     "pr:modified": "PR_UPDATED",
@@ -36,12 +41,6 @@ WEBHOOK_STATUS_MAP = {
 # =====================================================
 # PROMOTION PIPELINE (dev -> qa -> master)
 # =====================================================
-# A request's payload["environments"] can name dev, qa and/or prd. The
-# first PR always lands on `dev` (unchanged, existing behaviour below).
-# Reaching qa/master afterwards is a plain branch-to-branch pull request
-# between the persistent branches - no new commits, no cherry-picking -
-# which is why it's safe as long as each environment keeps its own YAML
-# file (confirmed: values.<env>.yaml, per market).
 ENV_STAGE_ORDER = ["dev", "qa", "master"]
 ENV_TO_BRANCH = {"dev": "dev", "qa": "qa", "prd": "master"}
 BRANCH_TO_ENV = {"dev": "DEV", "qa": "QA", "master": "PRD"}
@@ -68,9 +67,6 @@ def stage_summary(item):
 
 
 def compute_target_stages(payload):
-    """['dev'] for a dev-only request, ['dev','qa'] if qa is requested,
-    ['dev','qa','master'] if prd is requested (prd can only be reached
-    by passing through qa first)."""
     environments = payload.get("environments") or {}
     branches = {
         ENV_TO_BRANCH.get(env, env)
@@ -86,11 +82,6 @@ def compute_target_stages(payload):
 
 
 def advance_stage(item):
-    """Given a request item whose *current* stage's PR just merged, return
-    (new_stage_index, is_final, next_branch). Missing target_stages /
-    stage_index (items created before this change shipped) default to a
-    dev-only pipeline, which reproduces exactly today's behaviour for any
-    request already in flight at deploy time."""
     target_stages = item.get("target_stages") or ["dev"]
     # DynamoDB Number attributes deserialize as decimal.Decimal via the
     # boto3 resource API, and Decimal can't be used as a list index
@@ -161,7 +152,6 @@ def frontend_request(item):
 
 
 def trigger_gitops(request_id, payload):
-
     if not gitops_lambda_name:
         print(f"[GITOPS] GITOPS_LAMBDA_NAME not configured - skipping trigger for {request_id}")
         return
@@ -182,11 +172,6 @@ def trigger_gitops(request_id, payload):
 
 
 def trigger_promotion(request_id, next_branch):
-    """Claim (or join) the promotion into `next_branch` and ask the GitOps
-    lambda to open the dev->qa / qa->master pull request. If another
-    request already claimed this promotion (it merged into the previous
-    stage moments earlier), this one just joins it instead of opening a
-    second, redundant PR between the same two branches."""
     if not gitops_lambda_name:
         print(f"[GITOPS] GITOPS_LAMBDA_NAME not configured - skipping promotion for {request_id}")
         return
@@ -209,8 +194,6 @@ def trigger_promotion(request_id, next_branch):
         )
     except ClientError as error:
         if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            # A promotion to this branch is already open/in flight -
-            # ride along on it instead of opening a duplicate PR.
             table.update_item(
                 Key={"request_id": lock_key},
                 UpdateExpression="SET request_ids = list_append(if_not_exists(request_ids, :empty), :r)",
@@ -239,14 +222,10 @@ def trigger_promotion(request_id, next_branch):
 
 
 def _release_promotion(promotion_key):
-    """Once a promotion PR resolves (merged/declined/deleted): drop its
-    LOCK item so the next promotion to that branch can be claimed fresh,
-    and drop the PR#<id> lookup item itself too. Its job was purely to
-    correlate a webhook PR id back to request ids while the promotion was
-    in flight - the actual audit trail (which PR drove which transition)
-    now lives permanently on each request's own `history` list (see
-    _update_item and handle_promote's history append), so nothing is
-    lost by removing it here."""
+    """Drops the LOCK item so the next promotion can be claimed fresh,
+    and drops the PR#<id> lookup item itself too - its audit-trail job is
+    now covered by each request's own `history` list (see _update_item /
+    handle_promote), so nothing is lost by removing it."""
     lookup = table.get_item(Key={"request_id": promotion_key}).get("Item")
     if not lookup:
         return
@@ -257,16 +236,12 @@ def _release_promotion(promotion_key):
 
 
 def notify_requester_merged(item):
-    """Best-effort email to the original requester once their PR has
-    merged. Must never raise: the status is already durably updated in
-    DynamoDB by the time this runs, so a notification failure shouldn't
-    fail the webhook response back to Bitbucket."""
     if not item:
         return
     request_id = item["request_id"]
 
     if not notification_from_email:
-        print(f"[NOTIFY] NOTIFICATION_FROM_EMAIL not configured - skipping requester notification for {request_id}")
+        print(f"[NOTIFY] NOTIFICATION_FROM_EMAIL not configured (no DOMAIN set) - skipping requester notification for {request_id}")
         return
 
     submitted_by = item.get("payload", {}).get("submitted_by", {})
@@ -342,10 +317,6 @@ def _update_item(request_id, status, event_key, now, stage_index=None, comments=
 
 
 def handle_stage_event(event_key, request_ids, origin, promotion_key=None, pr_id=None):
-    """Applies one Bitbucket PR event to every request linked to that PR.
-    `request_ids` has exactly one entry for the original custom-branch PR
-    (gitops/REQ-xxxxxxxx), and one-or-more for a batched dev->qa / qa->master
-    promotion PR."""
     request_ids = [r for r in request_ids if r]
     if not request_ids:
         return response(200, {"message": "ignored - no linked requests"}, origin)
@@ -367,9 +338,6 @@ def handle_stage_event(event_key, request_ids, origin, promotion_key=None, pr_id
             _release_promotion(promotion_key)
         return response(200, {"requestIds": request_ids, "status": status}, origin)
 
-    # pr:merged - each linked request advances its own pipeline
-    # independently (they can be at different points if they joined the
-    # same promotion at different times).
     completed_ids = []
     promoted = []
 
@@ -404,29 +372,125 @@ def handle_stage_event(event_key, request_ids, origin, promotion_key=None, pr_id
     )
 
 
-def handle_webhook(payload, origin=None):
-    event_key = payload.get("eventKey")
+def _append_comment(request_id, comment_id, author, content, timestamp):
+    """Appends a GitHub PR-thread comment (issue_comment event) to the
+    request's `comments` list. Best-effort like _update_item's history
+    append: a missing request item, or any DynamoDB error, must not
+    fail the webhook response - GitHub only cares about a 2xx status."""
+    try:
+        table.update_item(
+            Key={"request_id": request_id},
+            UpdateExpression="SET comments = list_append(if_not_exists(comments, :empty_list), :c)",
+            ConditionExpression="attribute_exists(request_id)",
+            ExpressionAttributeValues={
+                ":c": [{
+                    "id": str(comment_id),
+                    "author": author,
+                    "content": content,
+                    "timestamp": timestamp,
+                }],
+                ":empty_list": [],
+            },
+        )
+    except ClientError as error:
+        if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            print(f"[COMMENT] No request found for {request_id} - skipping")
+        else:
+            print(f"[COMMENT] Failed to append comment to {request_id}: {error}")
 
-    branch_name = (
-        payload.get("pullRequest", {})
-        .get("fromRef", {})
-        .get("displayId", "")
-    )
-    pr_id = payload.get("pullRequest", {}).get("id")
+
+def handle_issue_comment(payload, origin):
+    """GitHub's `issue_comment` event fires for any comment left on a PR's
+    conversation thread - including a comment left while closing
+    (declining) or approving a PR without a formal review. Unlike
+    `pull_request`/`pull_request_review`, this payload carries no branch
+    name, only the issue/PR number and title.
+
+    Correlation is two-tiered:
+    - Initial PRs (branch gitops/REQ-XXXX) always get a deterministic
+      title, "GitOps Update gitops/REQ-XXXX" (create_pull_request's
+      default when no title is passed - see handle_create_pr in
+      lambda-gitops-personal/handler.py), so the request_id is pulled
+      straight out of the title. This works even for PRs opened before
+      the PR#<id> initial-PR lookup record existed, and doesn't depend
+      on any DynamoDB write at PR-creation time having succeeded.
+    - Promotion PRs ("Promote dev -> qa (...)") have no REQ- id in the
+      title and can span multiple request_ids, so those still go
+      through the PR#<id> lookup record written by handle_promote."""
+    if payload.get("action") != "created":
+        return response(200, {"message": "ignored - comment action not created"}, origin)
+
+    issue = payload.get("issue", {})
+    if "pull_request" not in issue:
+        return response(200, {"message": "ignored - comment not on a pull request"}, origin)
+
+    pr_id = issue.get("number")
+    comment = payload.get("comment", {})
+    content = comment.get("body")
+    if pr_id is None or not content:
+        return response(200, {"message": "ignored - missing PR number or comment body"}, origin)
+
+    title_match = re.search(r"gitops/(REQ-[^\s/]+)", issue.get("title") or "")
+    if title_match:
+        request_ids = [title_match.group(1)]
+    else:
+        lookup = table.get_item(Key={"request_id": f"PR#{pr_id}"}).get("Item")
+        if not lookup:
+            return response(200, {"message": "ignored - not our PR"}, origin)
+        request_ids = lookup.get("request_ids", [])
+
+    author = comment.get("user", {}).get("login", "GitHub")
+    timestamp = comment.get("created_at") or datetime.now(timezone.utc).isoformat()
+    for request_id in request_ids:
+        _append_comment(request_id, comment.get("id"), author, content, timestamp)
+
+    return response(200, {"message": "comment recorded"}, origin)
+
+
+def handle_webhook(github_event, payload, origin=None):
+    """Normalises a GitHub `pull_request` / `pull_request_review` webhook
+    into the same internal event_key vocabulary the Bitbucket/org Lambda
+    uses, then hands off to the shared handle_stage_event - identical
+    from that point on."""
+    pr = payload.get("pull_request", {})
+    branch_name = pr.get("head", {}).get("ref", "")
+    pr_id = pr.get("number")
+
+    if github_event == "pull_request":
+        action = payload.get("action")
+        if action == "closed":
+            event_key = "pr:merged" if pr.get("merged") else "pr:declined"
+        elif action in ("opened", "reopened"):
+            event_key = "pr:opened"
+        elif action == "synchronize":
+            event_key = "pr:modified"
+        else:
+            return response(200, {"message": f"ignored - unhandled pull_request action {action}"}, origin)
+
+    elif github_event == "pull_request_review":
+        if payload.get("action") != "submitted":
+            return response(200, {"message": "ignored - review not submitted"}, origin)
+        review_state = payload.get("review", {}).get("state")
+        if review_state == "approved":
+            event_key = "pr:reviewer:approved"
+        elif review_state == "changes_requested":
+            event_key = "pr:reviewer:needs_work"
+        else:
+            return response(200, {"message": f"ignored - review state {review_state}"}, origin)
+
+    elif github_event == "issue_comment":
+        return handle_issue_comment(payload, origin)
+
+    else:
+        return response(200, {"message": f"ignored - event type {github_event}"}, origin)
 
     if branch_name and "/" in branch_name and branch_name.split("/")[-1].startswith("REQ-"):
-        # gitops/REQ-xxxxxxxx - the original per-request PR into dev.
-        # Unchanged from before: identified by branch name, exactly as
-        # today.
         request_id = branch_name.split("/")[-1]
-        return handle_stage_event(event_key, [request_id], origin, pr_id=pr_id)
+        promotion_key = f"PR#{pr_id}" if pr_id is not None else None
+        return handle_stage_event(event_key, [request_id], origin, promotion_key=promotion_key, pr_id=pr_id)
 
-    # Not a per-request branch: either a dev->qa / qa->master promotion PR
-    # (persistent branches, no slash in the name) or a PR that has nothing
-    # to do with this portal. Resolve it by Bitbucket PR id instead - a
-    # miss just means it isn't ours.
     if pr_id is None:
-        return response(200, {"message": "ignored - no PR id on event"}, origin)
+        return response(200, {"message": "ignored - no PR number on event"}, origin)
 
     promotion = table.get_item(Key={"request_id": f"PR#{pr_id}"}).get("Item")
     if not promotion:
@@ -505,7 +569,6 @@ def handle_request(event):
         if not user_id:
             return response(400, {"message": "userId is required"}, origin)
         request_id = event.get("pathParameters", {}).get("request_id")
-        print(request_id)
         result = table.get_item(Key={"request_id": request_id})
         if "Item" not in result or result["Item"].get("submitted_by_id") != user_id:
             return response(404, {"message": "Request not found"}, origin)
@@ -515,15 +578,16 @@ def handle_request(event):
         request["history"] = item.get("history") or [
             {"status": item["status"], "timestamp": item.get("updatedAt", item["createdAt"]), "performedBy": "System"}
         ]
-        request["comments"] = []
+        request["comments"] = item.get("comments", [])
         return response(200, request, origin)
 
-    if method == "POST" and path == "/dpc/bitbucket/webhook":
+    if method == "POST" and path == "/dpc/github/webhook":
         try:
             payload = json.loads(event.get("body") or "{}")
         except json.JSONDecodeError:
             return response(400, {"message": "Invalid webhook payload"}, origin)
-        return handle_webhook(payload, origin)
+        github_event = (event.get("headers") or {}).get("x-github-event", "")
+        return handle_webhook(github_event, payload, origin)
 
     return response(404, {"message": "Route not found"}, origin)
 

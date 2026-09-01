@@ -1,0 +1,28 @@
+# Copy to terraform.tfvars and fill in before `terraform apply`.
+
+aws_region   = "eu-west-1"
+project_name = "dpc-whitelisting-personal"
+environment  = "dev"
+
+# --- GitHub config repo (REQUIRED) ---
+github_owner   = "omprasadnayak"
+github_repo    = "test-repo"
+repo_base_path = "markets"
+
+# Name of the Secrets Manager secret holding your GitHub PAT.
+# Create it out of band, e.g.:
+#   aws secretsmanager create-secret --name github-token \
+#     --secret-string '{"token":"ghp_xxx"}'
+# github_token_secret_name = "github-token"
+
+# --- Email notifications (OPTIONAL) ---
+# No verified SES domain is needed for personal testing - leave domain
+# empty (the default) and every notify_* call in both Lambdas no-ops
+# cleanly with no error. Only set this if you have a verified SES
+# identity you want to test the email path against.
+domain = ""
+
+# pr_approver_usernames = []
+# pr_approver_emails    = []
+
+cors_allow_origins = ["http://localhost:3000", "http://localhost:5173"]
