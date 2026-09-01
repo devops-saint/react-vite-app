@@ -162,13 +162,14 @@ resource "null_resource" "gitops_dependencies" {
   provisioner "local-exec" {
     # local-exec runs under cmd.exe by default on Windows, which doesn't
     # understand rm/mkdir -p/&&-chaining - hence the OS-conditional
-    # command and interpreter below (see local.is_windows above). Requires
-    # pip3 (and, on Windows, PowerShell - present by default on all
-    # supported Windows versions) on whatever machine runs `terraform
-    # apply`; both packages themselves are pure Python, so only the
-    # packaging step, not the packages, needs an OS-specific command.
+    # command and interpreter below (see local.is_windows above). Neither
+    # branch assumes a specific pip executable name: Windows installs of
+    # Python variously expose pip3, pip, python, or only the py launcher
+    # on PATH depending on how it was installed, and Unix distros vary
+    # similarly - both branches try pip3, then pip, then python -m pip
+    # (plus py -m pip on Windows) and use whichever exists.
     interpreter = local.is_windows ? ["PowerShell", "-Command"] : ["/bin/sh", "-c"]
-    command = local.is_windows ? "Remove-Item -Recurse -Force '${path.module}\\.build\\gitops-layer' -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force -Path '${path.module}\\.build\\gitops-layer\\python' | Out-Null; pip3 install --upgrade -r '${path.module}\\lambda-gitops-personal\\requirements.txt' -t '${path.module}\\.build\\gitops-layer\\python'" : "rm -rf ${path.module}/.build/gitops-layer && mkdir -p ${path.module}/.build/gitops-layer/python && pip3 install --upgrade -r ${path.module}/lambda-gitops-personal/requirements.txt -t ${path.module}/.build/gitops-layer/python"
+    command = local.is_windows ? "Remove-Item -Recurse -Force '${path.module}\\.build\\gitops-layer' -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force -Path '${path.module}\\.build\\gitops-layer\\python' | Out-Null; $pipArgs = @('install','--upgrade','-r','${path.module}\\lambda-gitops-personal\\requirements.txt','-t','${path.module}\\.build\\gitops-layer\\python'); if (Get-Command pip3 -ErrorAction SilentlyContinue) { & pip3 @pipArgs } elseif (Get-Command pip -ErrorAction SilentlyContinue) { & pip @pipArgs } elseif (Get-Command python -ErrorAction SilentlyContinue) { & python -m pip @pipArgs } elseif (Get-Command py -ErrorAction SilentlyContinue) { & py -m pip @pipArgs } else { Write-Error 'No pip3, pip, python, or py found on PATH - install Python (from python.org, with \"Add to PATH\" checked) and re-run terraform apply'; exit 1 }; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }" : "rm -rf ${path.module}/.build/gitops-layer && mkdir -p ${path.module}/.build/gitops-layer/python && if command -v pip3 >/dev/null 2>&1; then PIP=pip3; elif command -v pip >/dev/null 2>&1; then PIP=pip; else PIP=\"python3 -m pip\"; fi && $PIP install --upgrade -r ${path.module}/lambda-gitops-personal/requirements.txt -t ${path.module}/.build/gitops-layer/python"
   }
 }
 
