@@ -187,30 +187,6 @@ export function RequestDetailsPage() {
             </Grid>
           </Paper>
 
-          {/* AWS Information */}
-          <Paper sx={{ p: 3, mb: 3 }}>
-            <Typography variant="h6" gutterBottom>
-              AWS Information
-            </Typography>
-            <Divider sx={{ mb: 2 }} />
-            <Grid container spacing={2}>
-              <Grid item xs={6}>
-                <Typography variant="caption" color="text.secondary">
-                  AWS Region
-                </Typography>
-                <Typography variant="body1">{request.aws.region}</Typography>
-              </Grid>
-              <Grid item xs={6}>
-                <Typography variant="caption" color="text.secondary">
-                  Repository
-                </Typography>
-                <Typography variant="body1">
-                  {request.repositoryName}
-                </Typography>
-              </Grid>
-            </Grid>
-          </Paper>
-
           {/* Requested Resources */}
           <Paper sx={{ p: 3, mb: 3 }}>
             <Typography variant="h6" gutterBottom>

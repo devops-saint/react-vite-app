@@ -255,7 +255,7 @@ export function MyRequestsPage() {
                       </Typography>
                     </TableCell>
                     <TableCell>
-                      {request.marketCode} - {request.marketName}
+                      {request.marketCode.toUpperCase()} - {request.marketName}
                     </TableCell>
                     <TableCell align="center">
                       <Chip
