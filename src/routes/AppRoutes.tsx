@@ -12,6 +12,8 @@ const CreateRequestPage = lazy(() => import('@/pages/CreateRequestPage').then(m 
 const MyRequestsPage = lazy(() => import('@/pages/MyRequestsPage').then(m => ({ default: m.MyRequestsPage })));
 const RequestDetailsPage = lazy(() => import('@/pages/RequestDetailsPage').then(m => ({ default: m.RequestDetailsPage })));
 const HelpPage = lazy(() => import('@/pages/HelpPage').then(m => ({ default: m.HelpPage })));
+const ProfilePage = lazy(() => import('@/pages/ProfilePage').then(m => ({ default: m.ProfilePage })));
+const SettingsPage = lazy(() => import('@/pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const NotFoundPage = lazy(() => import('@/pages/NotFoundPage').then(m => ({ default: m.NotFoundPage })));
 
 function AppRoutes() {
@@ -34,6 +36,10 @@ function AppRoutes() {
 
             {/* Help */}
             <Route path={config.routes.help} element={<HelpPage />} />
+
+            {/* Account */}
+            <Route path={config.routes.profile} element={<ProfilePage />} />
+            <Route path={config.routes.settings} element={<SettingsPage />} />
 
             {/* 404 Page */}
             <Route path={config.routes.notFound} element={<NotFoundPage />} />

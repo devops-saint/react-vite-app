@@ -136,7 +136,7 @@ export const requestService = {
         requestedBy: submittedBy,
         aws: { region: config.aws.region },
         environments: data.environments,
-        status: 'SUBMITTED',
+        status: 'REQUEST_RECEIVED',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -302,17 +302,27 @@ export const requestService = {
         'requests'
       );
 
+      // Status categories reflect the real backend lifecycle (see
+      // lambda/handler.py WEBHOOK_STATUS_MAP + handle_stage_event), not
+      // the older SUBMITTED/BRANCH_CREATED/MERGED-style placeholder
+      // statuses this used to check for, which the backend never sends.
+      const isPromotionInProgress = (status: string) =>
+        /_MERGED_AWAITING_/.test(status);
+
       const stats = {
         pending: requests.filter(
           (r) =>
-            r.status === 'SUBMITTED' ||
-            r.status === 'BRANCH_CREATED' ||
-            r.status === 'PULL_REQUEST_CREATED' ||
-            r.status === 'PENDING_APPROVAL' ||
-            r.status === 'REQUEST_RECEIVED' // Include backend status
+            r.status === 'REQUEST_RECEIVED' ||
+            r.status === 'PR_CREATED' ||
+            r.status === 'PR_UPDATED' ||
+            r.status === 'PR_NEEDS_WORK' ||
+            r.status === 'SYNC_FAILED' ||
+            isPromotionInProgress(r.status)
         ).length,
-        approved: requests.filter((r) => r.status === 'MERGED').length,
-        rejected: requests.filter((r) => r.status === 'REJECTED').length,
+        approved: requests.filter((r) => r.status === 'PR_APPROVED').length,
+        rejected: requests.filter(
+          (r) => r.status === 'PR_DECLINED' || r.status === 'PR_DELETED'
+        ).length,
         completed: requests.filter((r) => r.status === 'COMPLETED').length,
       };
 

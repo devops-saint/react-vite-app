@@ -6,3 +6,5 @@ export { CreateRequestPage } from './CreateRequestPage';
 export { MyRequestsPage } from './MyRequestsPage';
 export { RequestDetailsPage } from './RequestDetailsPage';
 export { HelpPage } from './HelpPage';
+export { ProfilePage } from './ProfilePage';
+export { SettingsPage } from './SettingsPage';

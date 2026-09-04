@@ -20,7 +20,7 @@ export function HelpPage() {
         Help & Documentation
       </Typography>
       <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
-        Learn how to use the AWS Self-Service Whitelisting Portal
+        Learn how to use the DPC Self-Service Whitelisting Portal
       </Typography>
 
       {/* Purpose Section */}
@@ -33,16 +33,18 @@ export function HelpPage() {
         </Box>
         <Divider sx={{ mb: 2 }} />
         <Typography variant="body1" paragraph>
-          The AWS Self-Service Whitelisting Portal enables developers and teams
-          to submit requests for AWS resource access in a streamlined and
-          automated manner. This portal simplifies the process of requesting
-          access to S3 buckets, Secrets Manager secrets, and KMS keys across
-          different environments.
+          The DPC Self-Service Whitelisting Portal enables teams to submit
+          requests for AWS resource access in a streamlined, automated
+          manner. This portal simplifies the process of requesting access to
+          S3 buckets, Secrets Manager secrets, KMS keys, and Lambda functions
+          across the DEV, QA, and PRD environments.
         </Typography>
         <Typography variant="body1">
-          All requests are automatically processed through a GitOps workflow,
-          creating pull requests in the configured repository for review and
-          approval by the infrastructure team.
+          Every request is processed through an automated GitOps workflow: a
+          pull request is opened against the config repository for the DEV
+          environment, and once it&apos;s reviewed and merged in Bitbucket the
+          same change is automatically promoted through QA and on to PRD via
+          follow-on pull requests &mdash; no manual re-submission needed.
         </Typography>
       </Paper>
 
@@ -61,32 +63,26 @@ export function HelpPage() {
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="2. Fill in Application Information"
-              secondary="Provide your market code, application name, and business justification (minimum 20 characters)"
+              primary="2. Select your market"
+              secondary="Choose your market from the dropdown; the market name fills in automatically"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="3. Enter AWS Account Information"
-              secondary="The AWS region (eu-west-1) is pre-configured for whitelist requests"
+              primary="3. Add a business justification"
+              secondary="Explain why the access is needed (minimum 20 characters)"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="4. Configure Environments"
-              secondary="Add one or more environments (DEV, QA, PRD) and specify the AWS resources needed for each"
+              primary="4. Stage resources per environment"
+              secondary="Switch between the DEV, QA, and PRD tabs and add S3 bucket names, Secrets Manager ARNs, KMS Key ARNs, and/or Lambda function ARNs for each environment that needs access"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="5. Add Resources"
-              secondary="For each environment, add S3 bucket names, Secrets Manager ARNs, and/or KMS Key ARNs as needed"
-            />
-          </ListItem>
-          <ListItem>
-            <ListItemText
-              primary="6. Review and Submit"
-              secondary="Review all details carefully before submitting. Once submitted, requests cannot be modified"
+              primary="5. Review and submit"
+              secondary="Review all details carefully before submitting. Once submitted, requests cannot be edited"
             />
           </ListItem>
         </List>
@@ -102,51 +98,49 @@ export function HelpPage() {
         </Box>
         <Divider sx={{ mb: 2 }} />
         <Typography variant="body1" paragraph>
-          After you submit a request, it goes through the following automated
-          workflow:
+          After you submit a request, it moves through the following
+          automated workflow. A request that only targets DEV completes
+          after one merge; a request that also targets QA and/or PRD is
+          promoted automatically, one environment at a time.
         </Typography>
         <List>
           <ListItem>
             <ListItemText
-              primary="SUBMITTED"
-              secondary="Your request has been received and is queued for processing"
+              primary="Request received"
+              secondary="Your request has been received and queued for processing"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="BRANCH_CREATED"
-              secondary="A new branch has been created in the repository with your changes"
+              primary="Pull request opened"
+              secondary="A branch and pull request have been created in Bitbucket for the DEV environment"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="PULL_REQUEST_CREATED"
-              secondary="A pull request has been created for review by the infrastructure team"
+              primary="Pull request reviewed"
+              secondary="Approvers review the pull request in Bitbucket; it may be approved, sent back for changes, or declined"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="PENDING_APPROVAL"
-              secondary="The pull request is awaiting review and approval from authorized approvers"
+              primary="Merged and promoted"
+              secondary="Once merged, the change is automatically opened as a new pull request against the next environment (DEV → QA → PRD) and the cycle repeats"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="MERGED"
-              secondary="The pull request has been approved and merged into the main branch"
-            />
-          </ListItem>
-          <ListItem>
-            <ListItemText
-              primary="COMPLETED"
-              secondary="The changes have been deployed and your resources are now whitelisted"
+              primary="Completed"
+              secondary="The pull request into your final target environment has merged and the resources are whitelisted"
             />
           </ListItem>
         </List>
-        <Alert severity="warning" sx={{ mt: 2 }}>
-          <strong>Note:</strong> Requests may also be marked as REJECTED if they
-          don&apos;t meet security or compliance requirements. You&apos;ll
-          receive feedback in the request comments.
+        <Alert severity="info" sx={{ mt: 2 }}>
+          <strong>Note:</strong> There&apos;s no separate manual approval step
+          in the portal itself &mdash; approval happens on the pull request in
+          Bitbucket. If a sync step fails (for example, a transient Bitbucket
+          error), the portal automatically retries it on a schedule, so a
+          request can briefly show as failed before recovering on its own.
         </Alert>
       </Paper>
 
@@ -159,44 +153,56 @@ export function HelpPage() {
         <List>
           <ListItem>
             <ListItemText
-              primary="SUBMITTED"
+              primary="REQUEST_RECEIVED"
               secondary="Initial status when a request is created"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="BRANCH_CREATED"
-              secondary="Git branch created with configuration changes"
+              primary="PR_CREATED"
+              secondary="A pull request has been opened in Bitbucket for the current environment"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="PULL_REQUEST_CREATED"
-              secondary="Pull request opened for review"
+              primary="PR_UPDATED"
+              secondary="The open pull request received a new commit or update"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="PENDING_APPROVAL"
-              secondary="Awaiting approval from infrastructure team"
+              primary="PR_APPROVED"
+              secondary="An approver has approved the pull request"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="MERGED"
-              secondary="Changes merged and ready for deployment"
+              primary="PR_NEEDS_WORK"
+              secondary="A reviewer requested changes before the pull request can be merged"
+            />
+          </ListItem>
+          <ListItem>
+            <ListItemText
+              primary="PR_DECLINED / PR_DELETED"
+              secondary="The pull request was closed without merging or was removed &mdash; the request will not progress further; contact support if this wasn't expected"
+            />
+          </ListItem>
+          <ListItem>
+            <ListItemText
+              primary="{ENV}_MERGED_AWAITING_{NEXT_ENV}"
+              secondary="For example DEV_MERGED_AWAITING_QA: the pull request for that environment merged, and the automatic promotion pull request into the next environment is being opened"
             />
           </ListItem>
           <ListItem>
             <ListItemText
               primary="COMPLETED"
-              secondary="Resources successfully whitelisted"
+              secondary="The pull request into your final target environment has merged &mdash; resources are whitelisted"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="REJECTED"
-              secondary="Request denied - check comments for details"
+              primary="SYNC_FAILED"
+              secondary="An automated step (branch, PR, or promotion) hit an error. The portal retries this automatically on a schedule; it usually clears on its own within a few retry cycles"
             />
           </ListItem>
         </List>

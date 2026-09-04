@@ -15,6 +15,7 @@ export type RequestStatus =
   | 'PR_NEEDS_WORK'
   | 'PR_DECLINED'
   | 'PR_DELETED'
+  | 'SYNC_FAILED' // an automated gitops step failed; auto-retried on a schedule
   | 'UNKNOWN';
 
 // Environment Types
@@ -155,6 +156,7 @@ export const STATUS_CONFIG: Record<
   PR_NEEDS_WORK: { label: 'Needs Work', color: 'warning' },
   PR_DECLINED: { label: 'PR Declined', color: 'error' },
   PR_DELETED: { label: 'PR Deleted', color: 'default' },
+  SYNC_FAILED: { label: 'Sync Failed (retrying)', color: 'error' },
   UNKNOWN: { label: 'Unknown', color: 'default' },
 };
 

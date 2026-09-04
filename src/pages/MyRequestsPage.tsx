@@ -200,13 +200,15 @@ export function MyRequestsPage() {
             sx={{ minWidth: 200 }}
           >
             <MenuItem value="ALL">All Statuses</MenuItem>
-            <MenuItem value="SUBMITTED">Submitted</MenuItem>
-            <MenuItem value="BRANCH_CREATED">Branch Created</MenuItem>
-            <MenuItem value="PULL_REQUEST_CREATED">PR Created</MenuItem>
-            <MenuItem value="PENDING_APPROVAL">Pending Approval</MenuItem>
-            <MenuItem value="MERGED">Merged</MenuItem>
+            <MenuItem value="REQUEST_RECEIVED">Request Received</MenuItem>
+            <MenuItem value="PR_CREATED">PR Created</MenuItem>
+            <MenuItem value="PR_UPDATED">PR Updated</MenuItem>
+            <MenuItem value="PR_APPROVED">PR Approved</MenuItem>
+            <MenuItem value="PR_NEEDS_WORK">Needs Work</MenuItem>
+            <MenuItem value="PR_DECLINED">PR Declined</MenuItem>
+            <MenuItem value="PR_DELETED">PR Deleted</MenuItem>
+            <MenuItem value="SYNC_FAILED">Sync Failed (retrying)</MenuItem>
             <MenuItem value="COMPLETED">Completed</MenuItem>
-            <MenuItem value="REJECTED">Rejected</MenuItem>
           </TextField>
         </Box>
       </Paper>
