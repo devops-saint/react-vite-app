@@ -82,6 +82,12 @@ variable "github_repo" {
   default     = ""
 }
 
+variable "market_lock_stale_seconds" {
+  description = "How long (seconds) a per-market request lock (MARKETLOCK#<market>) can sit claimed before it's treated as abandoned and force-released for the next queued request. Default 24h; an admin can also force-release immediately via POST /dpc/requests/{id}/release-lock."
+  type        = number
+  default     = 86400
+}
+
 variable "repo_base_path" {
   description = "REQUIRED. Path inside the repo under which each market's values.<env>.yaml files live. The GitOps Lambda fails on every invocation until this is set."
   type        = string

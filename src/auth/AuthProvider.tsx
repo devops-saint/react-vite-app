@@ -18,11 +18,24 @@ interface AuthProviderProps {
   children: ReactNode;
 }
 
+const ADMIN_UNLOCK_STORAGE_KEY = 'dpc_admin_unlocked';
+
 export function AuthProvider({ children }: AuthProviderProps) {
   const { instance, accounts, inProgress } = useMsal();
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Temporary admin-unlock state (see AuthContextType.isAdminUnlocked) -
+  // sessionStorage-scoped so it clears when the tab closes rather than
+  // lingering indefinitely on a shared machine. Read lazily since
+  // sessionStorage isn't available during SSR/build.
+  const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem(ADMIN_UNLOCK_STORAGE_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
 
   // Safety timeout to prevent infinite loading
   useEffect(() => {
@@ -91,21 +104,57 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
   }, [instance]);
 
-  // Check if user has a specific role
+  // Check if user has a specific role. ADMIN is special-cased: the
+  // temporary manual unlock (see isAdminUnlocked above) stands in for a
+  // real Azure AD ADMIN app-role assignment until that's wired up.
   const hasRole = useCallback(
     (role: UserRole): boolean => {
+      if (role === UserRole.ADMIN && isAdminUnlocked) {
+        return true;
+      }
       return user?.roles.includes(role) || false;
     },
-    [user]
+    [user, isAdminUnlocked]
   );
 
   // Check if user has any of the specified roles
   const hasAnyRole = useCallback(
     (roles: UserRole[]): boolean => {
+      if (roles.includes(UserRole.ADMIN) && isAdminUnlocked) {
+        return true;
+      }
       return roles.some((role) => user?.roles.includes(role)) || false;
     },
-    [user]
+    [user, isAdminUnlocked]
   );
+
+  // Unlock ADMIN-gated UI for this tab by matching the build-time
+  // VITE_ADMIN_ACCESS_CODE. Returns false (and changes nothing) if the
+  // code is empty (feature disabled) or doesn't match. See the caveats
+  // on config.adminAccessCode and AuthContextType.isAdminUnlocked - this
+  // is a client-side convenience, not real access control.
+  const unlockAdminAccess = useCallback((code: string): boolean => {
+    if (!config.adminAccessCode || code !== config.adminAccessCode) {
+      return false;
+    }
+    setIsAdminUnlocked(true);
+    try {
+      sessionStorage.setItem(ADMIN_UNLOCK_STORAGE_KEY, 'true');
+    } catch {
+      // sessionStorage unavailable (private mode, etc.) - the in-memory
+      // state still unlocks for the rest of this tab's session.
+    }
+    return true;
+  }, []);
+
+  const lockAdminAccess = useCallback(() => {
+    setIsAdminUnlocked(false);
+    try {
+      sessionStorage.removeItem(ADMIN_UNLOCK_STORAGE_KEY);
+    } catch {
+      // no-op - nothing persisted to clean up
+    }
+  }, []);
 
   const value: AuthContextType = {
     isAuthenticated: !!user,
@@ -116,6 +165,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
     logout,
     hasRole,
     hasAnyRole,
+    isAdminUnlocked,
+    unlockAdminAccess,
+    lockAdminAccess,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

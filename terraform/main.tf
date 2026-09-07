@@ -42,9 +42,24 @@ resource "aws_dynamodb_table" "requests" {
     type = "S"
   }
 
+  attribute {
+    name = "market_code"
+    type = "S"
+  }
+
   global_secondary_index {
     name            = "submitted-by-created-at"
     hash_key        = "submitted_by_id"
+    range_key       = "createdAt"
+    projection_type = "ALL"
+  }
+
+  # Used to find the oldest QUEUED request for a market when releasing
+  # that market's lock (see MARKETLOCK#/QUEUED handling in
+  # lambda/handler.py) - lets that lookup be a Query instead of a Scan.
+  global_secondary_index {
+    name            = "market-code-created-at"
+    hash_key        = "market_code"
     range_key       = "createdAt"
     projection_type = "ALL"
   }
@@ -97,6 +112,7 @@ resource "aws_iam_role_policy" "lambda" {
         Resource = [
           aws_dynamodb_table.requests.arn,
           "${aws_dynamodb_table.requests.arn}/index/submitted-by-created-at",
+          "${aws_dynamodb_table.requests.arn}/index/market-code-created-at",
         ]
       },
       {
@@ -131,7 +147,13 @@ resource "aws_lambda_function" "request_api" {
   runtime          = "python3.12"
   filename         = data.archive_file.request_api.output_path
   source_code_hash = data.archive_file.request_api.output_base64sha256
-  timeout          = 15
+  # 29s, not 15s: GET /dpc/whitelist/{market}/{env} makes one synchronous
+  # (RequestResponse) call into the gitops Lambda to read the live repo
+  # state, on top of the usual near-instant DynamoDB-only routes. 29s is
+  # the practical ceiling either way - this HTTP API's own integration
+  # timeout is a fixed 30s AWS never lets you raise, so anything higher
+  # here would just get cut off by API Gateway first.
+  timeout          = 29
   memory_size      = 256
 
   environment {
@@ -140,6 +162,15 @@ resource "aws_lambda_function" "request_api" {
       CORS_ALLOW_ORIGINS = jsonencode(var.cors_allow_origins)
       GITOPS_LAMBDA_NAME = aws_lambda_function.gitops.function_name
       DOMAIN             = var.domain
+      # Used only to build a human-viewable Bitbucket PR link per stage in
+      # GET /dpc/requests/{id} (stage_summary) - this Lambda never calls
+      # Bitbucket itself, that's still exclusively the gitops Lambda's job.
+      BITBUCKET_URL = var.bitbucket_url
+      PROJECT_KEY   = var.project_key
+      REPO_NAME     = var.repo_name
+      # How long a MARKETLOCK can sit claimed before _claim_market_lock
+      # treats it as abandoned and force-releases it (see handler.py).
+      MARKET_LOCK_STALE_SECONDS = var.market_lock_stale_seconds
     }
   }
 
@@ -403,6 +434,24 @@ resource "aws_apigatewayv2_route" "request_details" {
 resource "aws_apigatewayv2_route" "webhook" {
   api_id    = aws_apigatewayv2_api.requests.id
   route_key = "POST /dpc/bitbucket/webhook"
+  target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
+}
+
+resource "aws_apigatewayv2_route" "release_market_lock" {
+  api_id    = aws_apigatewayv2_api.requests.id
+  route_key = "POST /dpc/requests/{request_id}/release-lock"
+  target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
+}
+
+resource "aws_apigatewayv2_route" "retry_promotion" {
+  api_id    = aws_apigatewayv2_api.requests.id
+  route_key = "POST /dpc/requests/{request_id}/retry-promotion"
+  target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
+}
+
+resource "aws_apigatewayv2_route" "get_whitelist" {
+  api_id    = aws_apigatewayv2_api.requests.id
+  route_key = "GET /dpc/whitelist/{market_code}/{environment}"
   target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
 }
 

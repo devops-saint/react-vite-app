@@ -13,20 +13,24 @@ import {
   List,
   ListItem,
   ListItemText,
+  Link,
+  Alert,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import DownloadIcon from '@mui/icons-material/Download';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { Timeline, Loader, ErrorState } from '@/components/common';
 import { config } from '@/config';
 import { requestService } from '@/api/services';
 import { useAuth } from '@/auth';
 import { RequestDetails, getStatusConfig } from '@/types/request.types';
+import { UserRole } from '@/types/auth.types';
 
 export function RequestDetailsPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, hasRole } = useAuth();
   const [request, setRequest] = useState<RequestDetails | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -55,6 +59,63 @@ export function RequestDetailsPage() {
   const handleDownload = () => {
     if (!request) return;
     requestService.downloadRequestJson(request);
+  };
+
+  const [releaseState, setReleaseState] = useState<{
+    loading: boolean;
+    message: string | null;
+    error: string | null;
+  }>({ loading: false, message: null, error: null });
+
+  const handleReleaseLock = async () => {
+    if (!id) return;
+    setReleaseState({ loading: true, message: null, error: null });
+    try {
+      const result = await requestService.releaseMarketLock(id);
+      setReleaseState({ loading: false, message: result.message, error: null });
+      // Re-fetch: this request may now have been promoted off the queue
+      // (if it was the oldest waiting), or may still show QUEUED behind
+      // whichever request was next in line.
+      if (user?.id) {
+        const refreshed = await requestService.getRequestById(id, user.id);
+        setRequest(refreshed);
+      }
+    } catch (error) {
+      setReleaseState({
+        loading: false,
+        message: null,
+        error:
+          error instanceof Error ? error.message : 'Failed to release market lock',
+      });
+    }
+  };
+
+  const [retryPromotionState, setRetryPromotionState] = useState<{
+    loading: boolean;
+    message: string | null;
+    error: string | null;
+  }>({ loading: false, message: null, error: null });
+
+  const handleRetryPromotion = async () => {
+    if (!id) return;
+    setRetryPromotionState({ loading: true, message: null, error: null });
+    try {
+      const result = await requestService.retryPromotion(id);
+      setRetryPromotionState({ loading: false, message: result.message, error: null });
+      // Re-fetch: a fresh promotion PR should now be open for the next
+      // stage - the timeline/PR links panel will pick it up.
+      if (user?.id) {
+        const refreshed = await requestService.getRequestById(id, user.id);
+        setRequest(refreshed);
+      }
+    } catch (error) {
+      setRetryPromotionState({
+        loading: false,
+        message: null,
+        error:
+          error instanceof Error ? error.message : 'Failed to retry promotion',
+      });
+    }
   };
 
   if (loading) {
@@ -89,9 +150,13 @@ export function RequestDetailsPage() {
       | 'info'
       | 'grey' = statusColor === 'default' ? 'grey' : statusColor;
 
+    const label = getStatusConfig(entry.status).label;
     return {
       id: entry.timestamp,
-      title: getStatusConfig(entry.status).label,
+      // entry.stage (DEV/QA/PRD) disambiguates which branch's PR this
+      // entry is about, since PR_APPROVED/PR_CREATED/etc. are reused
+      // across every stage.
+      title: entry.stage ? `${label} · ${entry.stage}` : label,
       description: entry.performedBy ? `By ${entry.performedBy}` : 'System',
       date: new Date(entry.timestamp).toLocaleString(),
       color: timelineColor,
@@ -359,6 +424,87 @@ export function RequestDetailsPage() {
 
         {/* Sidebar */}
         <Grid item xs={12} md={4}>
+          {/* Queued notice - this request is held back because another
+              in-flight request for the same market already holds the
+              MARKETLOCK (see lambda/handler.py). It resumes automatically
+              once that one reaches a terminal state; admins can force it
+              sooner via release-lock if the blocking request is dead. */}
+          {request.status === 'QUEUED' && (
+            <Paper sx={{ p: 3, mb: 3 }}>
+              <Alert severity="info" sx={{ mb: hasRole(UserRole.ADMIN) ? 2 : 0 }}>
+                This request is queued
+                {request.blockedBy ? ` behind ${request.blockedBy}` : ''} for
+                market {request.marketCode} - it will start automatically
+                once that request completes.
+              </Alert>
+              {hasRole(UserRole.ADMIN) && (
+                <>
+                  <Button
+                    variant="outlined"
+                    color="warning"
+                    size="small"
+                    disabled={releaseState.loading}
+                    onClick={() => void handleReleaseLock()}
+                  >
+                    {releaseState.loading ? 'Releasing…' : 'Force release market lock'}
+                  </Button>
+                  {releaseState.message && (
+                    <Alert severity="success" sx={{ mt: 2 }}>
+                      {releaseState.message}
+                    </Alert>
+                  )}
+                  {releaseState.error && (
+                    <Alert severity="error" sx={{ mt: 2 }}>
+                      {releaseState.error}
+                    </Alert>
+                  )}
+                </>
+              )}
+            </Paper>
+          )}
+
+          {/* Stuck-promotion notice - this request merged into a stage
+              (dev/qa) but no PR ever appeared for the next one. Usually
+              means the LOCK#{MARKET}#{BRANCH} guarding that promotion
+              got orphaned - most often an earlier promotion PR to that
+              same branch was resolved outside the portal (closed/merged
+              directly in the repo host rather than through the webhook),
+              so the lock was never released and silently absorbs every
+              later promotion attempt without opening a visible PR. See
+              _admin_force_retry_promotion in lambda/handler.py. */}
+          {request.status.includes('_MERGED_AWAITING_') && (
+            <Paper sx={{ p: 3, mb: 3 }}>
+              <Alert severity="warning" sx={{ mb: hasRole(UserRole.ADMIN) ? 2 : 0 }}>
+                This request merged but no promotion pull request has
+                appeared for the next stage yet. If it&apos;s been a while,
+                the lock guarding that promotion may be stuck.
+              </Alert>
+              {hasRole(UserRole.ADMIN) && (
+                <>
+                  <Button
+                    variant="outlined"
+                    color="warning"
+                    size="small"
+                    disabled={retryPromotionState.loading}
+                    onClick={() => void handleRetryPromotion()}
+                  >
+                    {retryPromotionState.loading ? 'Retrying…' : 'Retry promotion'}
+                  </Button>
+                  {retryPromotionState.message && (
+                    <Alert severity="success" sx={{ mt: 2 }}>
+                      {retryPromotionState.message}
+                    </Alert>
+                  )}
+                  {retryPromotionState.error && (
+                    <Alert severity="error" sx={{ mt: 2 }}>
+                      {retryPromotionState.error}
+                    </Alert>
+                  )}
+                </>
+              )}
+            </Paper>
+          )}
+
           {/* Status Timeline */}
           <Paper sx={{ p: 3, mb: 3 }}>
             <Typography variant="h6" gutterBottom>
@@ -367,6 +513,41 @@ export function RequestDetailsPage() {
             <Divider sx={{ mb: 2 }} />
             <Timeline items={timelineItems} />
           </Paper>
+
+          {/* Pull Requests - admin only. Bitbucket URLs are None/absent
+              when a stage has no PR yet, so only stages we actually have
+              a link for are shown. */}
+          {hasRole(UserRole.ADMIN) &&
+            request.prUrls &&
+            Object.values(request.prUrls).some((url) => url) && (
+              <Paper sx={{ p: 3, mb: 3 }}>
+                <Typography variant="h6" gutterBottom>
+                  Pull Requests
+                </Typography>
+                <Divider sx={{ mb: 2 }} />
+                <List dense disablePadding>
+                  {Object.entries(request.prUrls)
+                    .filter(([, url]) => url)
+                    .map(([stage, url]) => (
+                      <ListItem key={stage} disableGutters>
+                        <ListItemText
+                          primary={
+                            <Link
+                              href={url as string}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}
+                            >
+                              {stage} pull request
+                              <OpenInNewIcon fontSize="inherit" />
+                            </Link>
+                          }
+                        />
+                      </ListItem>
+                    ))}
+                </List>
+              </Paper>
+            )}
 
           {/* Comments */}
           {request.comments.length > 0 && (

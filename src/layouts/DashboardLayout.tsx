@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import { Box, Container, Toolbar } from '@mui/material';
 import { Header } from '@components/Header';
 import { Sidebar } from '@components/Sidebar';
 import { Footer } from '@components/Footer';
 import { Breadcrumbs } from '@components/Breadcrumbs';
+import { Loader } from '@/components/common';
 
 export function DashboardLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -41,7 +42,9 @@ export function DashboardLayout() {
           }}
         >
           <Breadcrumbs />
-          <Outlet />
+          <Suspense fallback={<Loader />}>
+            <Outlet />
+          </Suspense>
         </Container>
       </Box>
 

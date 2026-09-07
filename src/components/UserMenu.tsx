@@ -8,6 +8,7 @@ import {
   Divider,
   Typography,
   Box,
+  Chip,
 } from '@mui/material';
 import PersonIcon from '@mui/icons-material/Person';
 import SettingsIcon from '@mui/icons-material/Settings';
@@ -17,7 +18,7 @@ import { useNavigate } from 'react-router-dom';
 import { config } from '@/config';
 
 export function UserMenu() {
-  const { user, logout } = useAuth();
+  const { user, logout, isAdminUnlocked } = useAuth();
   const navigate = useNavigate();
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const open = Boolean(anchorEl);
@@ -103,6 +104,18 @@ export function UserMenu() {
           <Typography variant="caption" color="text.secondary">
             {user?.email}
           </Typography>
+          {/* Temporary stand-in for a real Azure AD ADMIN app-role - see
+              config.adminAccessCode / SettingsPage. Shown here so it's
+              obvious app-wide when this convenience unlock is active,
+              since it's easy to forget after unlocking it once. */}
+          {isAdminUnlocked && (
+            <Chip
+              label="Temporary Admin"
+              color="warning"
+              size="small"
+              sx={{ mt: 1 }}
+            />
+          )}
         </Box>
 
         <Divider />

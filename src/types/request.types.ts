@@ -8,6 +8,7 @@ export type RequestStatus =
   | 'COMPLETED'
   | 'REJECTED'
   | 'REQUEST_RECEIVED' // Added backend status
+  | 'QUEUED' // held back: another request for the same market is already in flight (see MARKETLOCK# in lambda/handler.py)
   // GitOps webhook statuses (set by the PR webhook as the linked PR progresses)
   | 'PR_CREATED'
   | 'PR_UPDATED'
@@ -96,6 +97,10 @@ export interface StatusHistoryEntry {
   timestamp: string;
   performedBy?: string;
   comments?: string;
+  // Which environment/branch (DEV/QA/PRD) this transition belongs to -
+  // lets the UI distinguish "PR Approved" on dev from the same status on
+  // qa/master, since the status string itself is shared across stages.
+  stage?: string;
 }
 
 // Request Comment
@@ -110,6 +115,21 @@ export interface RequestComment {
 export interface RequestDetails extends WhitelistRequest {
   history: StatusHistoryEntry[];
   comments: RequestComment[];
+  // From stage_summary() in lambda/handler.py - optional because the
+  // list-lookup fallback path in requestService.ts (getRequestById)
+  // doesn't reconstruct these. Keyed by environment (DEV/QA/PRD).
+  targetEnvironment?: string;
+  currentStage?: string;
+  prs?: Record<string, string | number | null>;
+  // Human-viewable Bitbucket PR links per stage - admin-only "view PR"
+  // link on the request-details page. Null where a PR id isn't on
+  // record yet, or the backend has no Bitbucket URL configured.
+  prUrls?: Record<string, string | null>;
+  // Only set when status is QUEUED - the request_id currently holding
+  // this market's lock, so the UI can explain what this one is waiting
+  // on. Undefined if nothing was queued ahead of it, or the lock lookup
+  // came back empty.
+  blockedBy?: string | null;
 }
 
 // Dashboard Statistics
@@ -124,6 +144,22 @@ export interface DashboardStats {
 export interface MarketOption {
   code: string;
   name: string;
+}
+
+// Current Whitelist (GET /dpc/whitelist/{marketCode}/{environment} - what's
+// already whitelisted on a given node, read live off the source-controlled
+// values.<env>.yaml rather than anything the portal itself has recorded).
+export interface CurrentWhitelist {
+  marketCode: string;
+  environment: string;
+  filePath: string;
+  // false when the file has never been created for this market/environment
+  // (a 404 from the repo - a normal, expected state, not an error).
+  exists: boolean;
+  buckets: string[];
+  secrets: string[];
+  kmsKeys: string[];
+  functions: string[];
 }
 
 // Status Display Configuration
@@ -149,6 +185,7 @@ export const STATUS_CONFIG: Record<
   COMPLETED: { label: 'Completed', color: 'success' },
   REJECTED: { label: 'Rejected', color: 'error' },
   REQUEST_RECEIVED: { label: 'Request Received', color: 'info' }, // Added backend status
+  QUEUED: { label: 'Queued', color: 'default' },
   // GitOps webhook statuses
   PR_CREATED: { label: 'PR Created', color: 'primary' },
   PR_UPDATED: { label: 'PR Updated', color: 'primary' },
@@ -204,6 +241,10 @@ export interface ApiGatewaySuccessResponse {
   statusCode: number;
   message: string;
   requestId: string;
+  // REQUEST_RECEIVED if this request's market lock was free, QUEUED if
+  // another in-flight request for the same market already held it (see
+  // POST /dpc/request in lambda/handler.py).
+  status?: string;
   data?: unknown;
 }
 

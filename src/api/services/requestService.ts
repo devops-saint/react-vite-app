@@ -7,6 +7,7 @@ import {
   Environment,
   EnvironmentName,
   RequestedBy,
+  CurrentWhitelist,
 } from '@/types/request.types';
 import { config } from '@/config';
 import { v4 as uuidv4 } from 'uuid';
@@ -136,7 +137,11 @@ export const requestService = {
         requestedBy: submittedBy,
         aws: { region: config.aws.region },
         environments: data.environments,
-        status: 'REQUEST_RECEIVED',
+        // Backend reports QUEUED instead when another in-flight request
+        // already holds this market's lock (see POST /dpc/request in
+        // lambda/handler.py) - fall back to REQUEST_RECEIVED only if the
+        // response is somehow missing the field.
+        status: (apiResponse.status as WhitelistRequest['status']) || 'REQUEST_RECEIVED',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -313,6 +318,7 @@ export const requestService = {
         pending: requests.filter(
           (r) =>
             r.status === 'REQUEST_RECEIVED' ||
+            r.status === 'QUEUED' ||
             r.status === 'PR_CREATED' ||
             r.status === 'PR_UPDATED' ||
             r.status === 'PR_NEEDS_WORK' ||
@@ -386,6 +392,61 @@ export const requestService = {
           : 'Failed to fetch recent requests'
       );
     }
+  },
+
+  /**
+   * What's already whitelisted for a market/environment, read live off
+   * the source-controlled values.<env>.yaml (not anything the portal
+   * itself has recorded - it only knows about requests submitted through
+   * it, never the actual repo content). `exists: false` on the response
+   * means nothing has ever been whitelisted for that pair yet - a normal
+   * state, not an error.
+   */
+  getCurrentWhitelist: async (
+    marketCode: string,
+    environment: string
+  ): Promise<CurrentWhitelist> => {
+    const response = await apiGatewayAxios.get<CurrentWhitelist>(
+      `/whitelist/${marketCode.toLowerCase()}/${environment.toLowerCase()}`
+    );
+    return response.data;
+  },
+
+  /**
+   * Admin-only: force-release whatever currently holds this request's
+   * market lock (regardless of staleness) and immediately promote the
+   * oldest queued request for that market. Same no-server-side-auth
+   * caveat as the rest of this API - gated purely by the caller checking
+   * UserRole.ADMIN before showing the button (see RequestDetailsPage).
+   */
+  releaseMarketLock: async (
+    requestId: string
+  ): Promise<{ message: string; marketCode: string }> => {
+    const response = await apiGatewayAxios.post<{
+      message: string;
+      marketCode: string;
+    }>(`/requests/${requestId}/release-lock`);
+    return response.data;
+  },
+
+  /**
+   * Admin-only: for a request stuck at e.g. "QA_MERGED_AWAITING_MASTER"
+   * with no promotion PR ever appearing - force-drops whatever's
+   * (likely orphaned) holding that stage's promotion lock and re-opens
+   * a fresh promotion PR for this request. Same no-server-side-auth
+   * caveat as releaseMarketLock - gated purely by the caller checking
+   * UserRole.ADMIN before showing the button.
+   */
+  retryPromotion: async (
+    requestId: string
+  ): Promise<{ message: string; requestId: string; nextBranch: string; marketCode: string }> => {
+    const response = await apiGatewayAxios.post<{
+      message: string;
+      requestId: string;
+      nextBranch: string;
+      marketCode: string;
+    }>(`/requests/${requestId}/retry-promotion`);
+    return response.data;
   },
 
   /**

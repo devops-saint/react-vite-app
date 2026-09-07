@@ -8,3 +8,4 @@ export { RequestDetailsPage } from './RequestDetailsPage';
 export { HelpPage } from './HelpPage';
 export { ProfilePage } from './ProfilePage';
 export { SettingsPage } from './SettingsPage';
+export { CurrentWhitelistPage } from './CurrentWhitelistPage';

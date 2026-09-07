@@ -200,6 +200,7 @@ export function MyRequestsPage() {
             sx={{ minWidth: 200 }}
           >
             <MenuItem value="ALL">All Statuses</MenuItem>
+            <MenuItem value="QUEUED">Queued</MenuItem>
             <MenuItem value="REQUEST_RECEIVED">Request Received</MenuItem>
             <MenuItem value="PR_CREATED">PR Created</MenuItem>
             <MenuItem value="PR_UPDATED">PR Updated</MenuItem>

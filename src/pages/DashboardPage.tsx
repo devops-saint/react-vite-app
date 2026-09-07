@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { buildRequestDetailsPath } from '@/config';
+import { buildRequestDetailsPath, config } from '@/config';
 import {
   Box,
   Container,
@@ -16,11 +16,17 @@ import {
   TableHead,
   TableRow,
   Chip,
+  Stack,
+  Button,
 } from '@mui/material';
 import PendingIcon from '@mui/icons-material/Pending';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CancelIcon from '@mui/icons-material/Cancel';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
+import AddIcon from '@mui/icons-material/Add';
+import AssignmentIcon from '@mui/icons-material/Assignment';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
+import Inventory2Icon from '@mui/icons-material/Inventory2';
 import { useAuth } from '@/auth';
 import { requestService } from '@/api/services';
 import { WhitelistRequest, getStatusConfig } from '@/types/request.types';
@@ -74,13 +80,54 @@ export function DashboardPage() {
   return (
     <Container maxWidth="xl" sx={{ py: 4 }}>
       {/* Welcome Section */}
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="h4" fontWeight="bold" gutterBottom>
-          Welcome, {user?.name || 'User'}!
-        </Typography>
-        <Typography variant="body1" color="text.secondary">
-          Manage your AWS resource whitelist requests
-        </Typography>
+      <Box
+        sx={{
+          mb: 4,
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: { xs: 'flex-start', sm: 'center' },
+          gap: 2,
+        }}
+      >
+        <Box>
+          <Typography variant="h4" fontWeight="bold" gutterBottom>
+            Welcome, {user?.name || 'User'}!
+          </Typography>
+          <Typography variant="body1" color="text.secondary">
+            Manage your AWS resource whitelist requests
+          </Typography>
+        </Box>
+        <Stack direction="row" spacing={1} flexWrap="wrap">
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => navigate(config.routes.requestsCreate)}
+          >
+            Create Request
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<AssignmentIcon />}
+            onClick={() => navigate(config.routes.requests)}
+          >
+            My Requests
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<Inventory2Icon />}
+            onClick={() => navigate(config.routes.whitelist)}
+          >
+            View Whitelist
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<HelpOutlineIcon />}
+            onClick={() => navigate(config.routes.help)}
+          >
+            Help
+          </Button>
+        </Stack>
       </Box>
 
       {/* Summary Cards */}

@@ -14,6 +14,7 @@ import DashboardIcon from '@mui/icons-material/Dashboard';
 import AddIcon from '@mui/icons-material/Add';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
+import Inventory2Icon from '@mui/icons-material/Inventory2';
 import { config } from '@/config';
 
 const DRAWER_WIDTH = 260;
@@ -44,6 +45,11 @@ const menuItems: MenuItem[] = [
     title: 'My Requests',
     icon: <AssignmentIcon />,
     path: config.routes.requests,
+  },
+  {
+    title: 'Current Whitelist',
+    icon: <Inventory2Icon />,
+    path: config.routes.whitelist,
   },
   {
     title: 'Help',

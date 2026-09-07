@@ -40,6 +40,14 @@ GITHUB_REPO = os.environ["GITHUB_REPO"]
 
 SOURCE_BRANCH = "dev"
 
+# Which persistent branch holds the *live* (already-merged) state for each
+# requested environment - same mapping lambda-personal/handler.py uses for
+# compute_target_stages/ENV_TO_BRANCH. Only used by handle_get_whitelist
+# below (a read of the current committed state), never by the
+# CREATE_PR/PROMOTE write paths, which always work off the branch name
+# they're explicitly given.
+ENV_TO_BRANCH = {"dev": "dev", "qa": "qa", "prd": "master"}
+
 REPO_BASE_PATH = os.environ["REPO_BASE_PATH"]
 
 SUPPORTED_SECTIONS = [
@@ -256,6 +264,65 @@ def get_file(branch_name, file_path):
     return content, data["sha"]
 
 # =====================================================
+# GET CURRENT WHITELIST (read-only - "what's already whitelisted on this
+# node" - stakeholder item 6) - identical to the org Lambda's version,
+# just backed by GitHub's contents API (get_file) instead of Bitbucket's
+# raw-file endpoint.
+# =====================================================
+
+def handle_get_whitelist(event):
+    """Reads and parses the *live* values.<env>.yaml for one market/
+    environment straight off its persistent branch (dev/qa/master) - not
+    from anything the portal itself has recorded, since DynamoDB only
+    knows about requests submitted through it, never the actual repo
+    content. A 404 (file was never created for this market/environment)
+    is a normal, expected empty result, not an error - most market/env
+    pairs simply have nothing whitelisted yet."""
+    market_code = (event.get("market_code") or "").strip().lower()
+    environment = (event.get("environment") or "").strip().lower()
+
+    if not market_code or not environment:
+        return {"status": "ERROR", "message": "market_code and environment are required"}
+
+    branch_name = ENV_TO_BRANCH.get(environment)
+    if not branch_name:
+        return {"status": "ERROR", "message": f"Unknown environment '{environment}' - expected dev, qa, or prd"}
+
+    file_path = f"{REPO_BASE_PATH}/{market_code}/values.{environment}.yaml"
+
+    try:
+        content, _blob_sha = get_file(branch_name, file_path)
+    except requests.exceptions.HTTPError as error:
+        status_code = error.response.status_code if error.response is not None else None
+        if status_code == 404:
+            return {
+                "status": "SUCCESS",
+                "marketCode": market_code.upper(),
+                "environment": environment.upper(),
+                "filePath": file_path,
+                "exists": False,
+                "buckets": [],
+                "secrets": [],
+                "kmsKeys": [],
+                "functions": [],
+            }
+        raise
+
+    yaml_data = yaml_parser.load(content) or {}
+
+    return {
+        "status": "SUCCESS",
+        "marketCode": market_code.upper(),
+        "environment": environment.upper(),
+        "filePath": file_path,
+        "exists": True,
+        "buckets": [str(v) for v in (yaml_data.get("buckets") or [])],
+        "secrets": [str(v) for v in (yaml_data.get("secrets") or [])],
+        "kmsKeys": [str(v) for v in (yaml_data.get("kmsKeys") or [])],
+        "functions": [str(v) for v in (yaml_data.get("functions") or [])],
+    }
+
+# =====================================================
 # UPDATE YAML DATA (identical to the Bitbucket version -
 # git-host-agnostic)
 # =====================================================
@@ -456,13 +523,25 @@ def commit_file(
 def commit_files(
     branch_name,
     updated_files,
-    request_id
+    request_id,
+    requested_by=None
 ):
 
     commit_results = []
 
+    requester_label = None
+    if requested_by:
+        name = requested_by.get("name")
+        email = requested_by.get("email")
+        if name and email:
+            requester_label = f"{name} <{email}>"
+        else:
+            requester_label = name or email
+
     commit_message = (
-        f"GitOps update for {request_id}"
+        f"GitOps update for {request_id} (requested by {requester_label})"
+        if requester_label
+        else f"GitOps update for {request_id}"
     )
 
     for file in updated_files:
@@ -604,6 +683,7 @@ def notify_approvers_pr_created(pr, payload):
 
     market_code = payload.get("market_code", "unknown")
     submitted_by = payload.get("submitted_by", {})
+    business_justification = payload.get("business_justification", "").strip()
     pr_url = pr.get("html_url", "")
 
     subject = f"[Action required] Review PR for whitelist request {request_id}"
@@ -612,6 +692,7 @@ def notify_approvers_pr_created(pr, payload):
         f"Request ID: {request_id}\n"
         f"Market: {market_code}\n"
         f"Requested by: {submitted_by.get('name', 'Unknown')} ({submitted_by.get('email', 'unknown')})\n"
+        f"Justification: {business_justification or '(none provided)'}\n"
         f"Pull request: {pr_url or '(link unavailable)'}\n"
     )
 
@@ -692,7 +773,8 @@ def handle_create_pr(event):
     commit_results = commit_files(
         branch_name=branch_name,
         updated_files=updated_files,
-        request_id=request_id
+        request_id=request_id,
+        requested_by=payload.get("submitted_by")
     )
 
     pr = create_pull_request(
@@ -766,6 +848,63 @@ def _append_history(dynamo_table, request_id, comments, now):
         print(f"[HISTORY] Failed to append history for {request_id}: {error}")
 
 
+def _link_promotion_pr(dynamo_table, pr_id, promotion_id, lock_key, request_ids, to_branch):
+    """Records this promotion's request_ids/lock_key against PR#<pr_id> -
+    see the identical, fuller comment on this in the org Lambda. GitHub
+    only allows one open PR for a given head/base branch pair too, so
+    the exact same cross-market collision applies here: two different
+    markets promoting to dev->qa within a short window can end up
+    sharing one real PR, and a plain put_item would silently overwrite
+    whichever market's handle_promote ran last."""
+    promotion_key = f"PR#{pr_id}"
+    try:
+        dynamo_table.put_item(
+            Item={
+                "request_id": promotion_key,
+                "type": "promotion",
+                "promotion_ids": [promotion_id],
+                "request_ids": request_ids,
+                "lock_keys": [lock_key],
+                "to_branch": to_branch,
+            },
+            ConditionExpression="attribute_not_exists(request_id)",
+        )
+        return
+    except ClientError as error:
+        if error.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+    existing = dynamo_table.get_item(Key={"request_id": promotion_key}).get("Item") or {}
+    existing_promotion_ids = existing.get("promotion_ids") or []
+    existing_lock_keys = existing.get("lock_keys") or []
+    existing_request_ids = existing.get("request_ids") or []
+
+    new_promotion_ids = existing_promotion_ids if promotion_id in existing_promotion_ids else existing_promotion_ids + [promotion_id]
+    new_lock_keys = existing_lock_keys if lock_key in existing_lock_keys else existing_lock_keys + [lock_key]
+    new_request_ids = list(existing_request_ids)
+    for request_id in request_ids:
+        if request_id not in new_request_ids:
+            new_request_ids.append(request_id)
+
+    if (
+        new_promotion_ids == existing_promotion_ids
+        and new_lock_keys == existing_lock_keys
+        and new_request_ids == existing_request_ids
+    ):
+        return  # already recorded - a retried/duplicate call, no-op
+
+    dynamo_table.update_item(
+        Key={"request_id": promotion_key},
+        UpdateExpression="SET promotion_ids = :pids, lock_keys = :lks, request_ids = :rids",
+        ExpressionAttributeValues={
+            ":pids": new_promotion_ids,
+            ":lks": new_lock_keys,
+            ":rids": new_request_ids,
+        },
+    )
+    print(f"[GITOPS] {promotion_key} now shared across lock_keys={new_lock_keys}")
+
+
 def handle_promote(event):
     promotion_id = event["promotion_id"]
     from_branch = event["from_branch"]
@@ -785,14 +924,7 @@ def handle_promote(event):
     lock_item = dynamo_table.get_item(Key={"request_id": lock_key}).get("Item", {})
     request_ids = lock_item.get("request_ids", [])
 
-    dynamo_table.put_item(Item={
-        "request_id": f"PR#{pr_id}",
-        "type": "promotion",
-        "promotion_id": promotion_id,
-        "request_ids": request_ids,
-        "to_branch": to_branch,
-        "lock_key": lock_key,
-    })
+    _link_promotion_pr(dynamo_table, pr_id, promotion_id, lock_key, request_ids, to_branch)
     dynamo_table.update_item(
         Key={"request_id": lock_key},
         UpdateExpression="SET pr_id = :p, #st = :s",
@@ -800,16 +932,17 @@ def handle_promote(event):
         ExpressionAttributeValues={":p": pr_id, ":s": "OPEN"},
     )
 
-    history_now = datetime.now(timezone.utc).isoformat()
+    # No _append_history call here on the success path - deliberately.
+    # See the identical, fuller comment on this in the org Lambda: it
+    # used to log a "Promotion PR opened" entry reusing the request's
+    # CURRENT (still-stale) status, moments before the real pr:opened
+    # webhook for this same PR landed its own correctly-staged entry -
+    # showing up as a confusing near-duplicate with no stage label.
+    # Confirmed via a real test. pr_qa/pr_master is still set eagerly
+    # below so the PR link shows up without waiting on the webhook.
     pr_field = PR_FIELD_FOR_BRANCH.get(to_branch)
-    for linked_request_id in request_ids:
-        _append_history(
-            dynamo_table,
-            linked_request_id,
-            f"Promotion PR opened: {from_branch} -> {to_branch} (PR #{pr_id})",
-            history_now,
-        )
-        if pr_field:
+    if pr_field:
+        for linked_request_id in request_ids:
             try:
                 dynamo_table.update_item(
                     Key={"request_id": linked_request_id},
@@ -1081,6 +1214,14 @@ def lambda_handler(event, context):
 
     if action == "SWEEP":
         return handle_sweep(event, context)
+
+    if action == "GET_WHITELIST":
+        # Synchronous read, invoked RequestResponse from the main Lambda's
+        # GET /dpc/whitelist/{market}/{environment} - deliberately outside
+        # the try/except below, which exists to record request-lifecycle
+        # failures (_report_failure/_mark_request_sync_failed) that don't
+        # apply to a read with no request_id or DynamoDB item involved.
+        return handle_get_whitelist(event)
 
     try:
         if action == "PROMOTE":

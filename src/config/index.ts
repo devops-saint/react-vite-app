@@ -79,6 +79,20 @@ export const config = {
     enableDevtools: import.meta.env.VITE_ENABLE_DEVTOOLS === 'true',
   },
 
+  // Temporary static admin-unlock code, until real Azure AD ADMIN
+  // app-role assignment is set up (see the audit doc's auth-gap
+  // finding). Empty/unset disables the unlock UI entirely.
+  //
+  // IMPORTANT: this is a Vite env var, so its value is compiled into
+  // the built JS bundle in plain text - visible to anyone via
+  // view-source or browser devtools. It is NOT a secret and provides
+  // no real security; it only toggles which admin buttons render in
+  // an app whose backend already has no server-side authorization at
+  // all (see the same audit finding). Treat it purely as a convenience
+  // to avoid hand-editing Azure AD roles during testing, not as access
+  // control - remove it once real AD roles are wired up.
+  adminAccessCode: import.meta.env.VITE_ADMIN_ACCESS_CODE || '',
+
   // Available Markets (comma-separated "CODE:Name" pairs in VITE_AVAILABLE_MARKETS)
   markets: parseMarkets(import.meta.env.VITE_AVAILABLE_MARKETS),
 
@@ -94,6 +108,7 @@ export const config = {
     notFound: import.meta.env.VITE_ROUTE_NOT_FOUND || '/404',
     profile: import.meta.env.VITE_ROUTE_PROFILE || '/profile',
     settings: import.meta.env.VITE_ROUTE_SETTINGS || '/settings',
+    whitelist: import.meta.env.VITE_ROUTE_WHITELIST || '/whitelist',
   },
 } as const;
 

@@ -82,6 +82,12 @@ variable "project_key" {
   default     = ""
 }
 
+variable "market_lock_stale_seconds" {
+  description = "How long (seconds) a per-market request lock (MARKETLOCK#<market>) can sit claimed before it's treated as abandoned and force-released for the next queued request. Default 24h; an admin can also force-release immediately via POST /dpc/requests/{id}/release-lock."
+  type        = number
+  default     = 86400
+}
+
 variable "repo_name" {
   description = "REQUIRED. Bitbucket repository slug holding the per-market environment YAML files. The GitOps Lambda fails on every invocation until this is set."
   type        = string
