@@ -30,8 +30,12 @@ const SECTIONS: { key: keyof Pick<CurrentWhitelist, 'buckets' | 'secrets' | 'kms
 ];
 
 export function CurrentWhitelistPage() {
-  const [marketCode, setMarketCode] = useState(config.markets[0]?.code || '');
-  const [environment, setEnvironment] = useState<(typeof ENVIRONMENTS)[number]>('DEV');
+  // Neither starts pre-selected - showing a default market/DEV on load
+  // reads as "here's DEV's whitelist" before the viewer has chosen
+  // anything, which is misleading when they meant a different market.
+  // Require an explicit choice for both instead.
+  const [marketCode, setMarketCode] = useState('');
+  const [environment, setEnvironment] = useState<'' | (typeof ENVIRONMENTS)[number]>('');
   const [whitelist, setWhitelist] = useState<CurrentWhitelist | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,13 +58,16 @@ export function CurrentWhitelistPage() {
     }
   };
 
-  // Auto-load whenever the selected market or environment changes - both
-  // always have a value (a default market/DEV are pre-selected), so there
-  // is never a "waiting on the user to pick something" empty state.
+  // Auto-loads once both a market and an environment are selected (the
+  // fetchWhitelist guard above is a no-op until then) - no separate
+  // "Search" button needed, but also nothing fetched on the viewer's
+  // behalf before they've actually picked something.
   useEffect(() => {
     void fetchWhitelist();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [marketCode, environment]);
+
+  const readyToShow = Boolean(marketCode && environment);
 
   const market = config.markets.find((item) => item.code === marketCode);
 
@@ -90,8 +97,12 @@ export function CurrentWhitelistPage() {
             select
             label="Market"
             value={marketCode}
+            SelectProps={{ displayEmpty: true }}
             onChange={(event) => setMarketCode(event.target.value)}
           >
+            <MenuItem value="">
+              <em>Select market</em>
+            </MenuItem>
             {config.markets.map((item) => (
               <MenuItem key={item.code} value={item.code}>
                 {item.code} — {item.name}
@@ -102,10 +113,14 @@ export function CurrentWhitelistPage() {
             select
             label="Environment"
             value={environment}
+            SelectProps={{ displayEmpty: true }}
             onChange={(event) =>
-              setEnvironment(event.target.value as (typeof ENVIRONMENTS)[number])
+              setEnvironment(event.target.value as '' | (typeof ENVIRONMENTS)[number])
             }
           >
+            <MenuItem value="">
+              <em>Select environment</em>
+            </MenuItem>
             {ENVIRONMENTS.map((env) => (
               <MenuItem key={env} value={env}>
                 {env}
@@ -121,6 +136,12 @@ export function CurrentWhitelistPage() {
           </Tooltip>
         </Box>
       </Paper>
+
+      {!readyToShow && !loading && (
+        <Alert severity="info">
+          Select a market and an environment above to see the current whitelist.
+        </Alert>
+      )}
 
       {loading && <Loader message="Reading current whitelist..." />}
 
