@@ -425,7 +425,7 @@ export function CreateRequestPage() {
               >
                 {config.markets.map((item) => (
                   <MenuItem key={item.code} value={item.code}>
-                    {item.code} — {item.name}
+                    {item.code}
                   </MenuItem>
                 ))}
               </TextField>

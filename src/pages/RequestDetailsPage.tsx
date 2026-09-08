@@ -235,11 +235,17 @@ export function RequestDetailsPage() {
               </Grid>
               <Grid item xs={6}>
                 <Typography variant="caption" color="text.secondary">
-                  Market
+                  Market Code
                 </Typography>
                 <Typography variant="body1">
-                  {request.marketCode.toUpperCase()} - {request.marketName}
+                  {request.marketCode.toUpperCase()}
                 </Typography>
+              </Grid>
+              <Grid item xs={6}>
+                <Typography variant="caption" color="text.secondary">
+                  Market Name
+                </Typography>
+                <Typography variant="body1">{request.marketName}</Typography>
               </Grid>
               <Grid item xs={12}>
                 <Typography variant="caption" color="text.secondary">
