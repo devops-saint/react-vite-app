@@ -46,6 +46,12 @@ const environments: Array<{
   { key: 'PRD', label: 'Production', color: '#E56B6F' },
 ];
 
+// Colors match AWS's own Architecture Icons category palette (same
+// mapping used on the View Whitelist page) rather than an arbitrary
+// decorative choice - Storage (S3) is AWS's "Endor" green, Security,
+// Identity & Compliance (Secrets Manager + KMS - the same category in
+// AWS's own icon set, hence the same color) is "Mars" red, and Compute
+// (Lambda) is "Smile" orange.
 const resourceTypes: Array<{
   key: ResourceKey;
   label: string;
@@ -60,7 +66,7 @@ const resourceTypes: Array<{
     label: 'S3 Buckets',
     helper: 'Bucket name, or a full S3 ARN',
     placeholder: 'my-app-uploads',
-    color: '#F2A65A',
+    color: '#7AA116',
     icon: StorageOutlinedIcon,
     isValid: (value) =>
       /^(arn:aws:s3:::[a-z0-9.-]{3,63}|[a-z0-9][a-z0-9.-]{1,61}[a-z0-9])$/i.test(
@@ -72,7 +78,7 @@ const resourceTypes: Array<{
     label: 'Secrets Manager',
     helper: 'Full AWS Secrets Manager ARN',
     placeholder: 'arn:aws:secretsmanager:region:account:secret:name',
-    color: '#E56B6F',
+    color: '#DD344C',
     icon: VpnKeyOutlinedIcon,
     isValid: (value) =>
       /^arn:aws:secretsmanager:[a-z0-9-]+:\d{12}:secret:.+$/i.test(value),
@@ -82,7 +88,7 @@ const resourceTypes: Array<{
     label: 'KMS Keys',
     helper: 'Full AWS KMS key ARN',
     placeholder: 'arn:aws:kms:region:account:key/id',
-    color: '#9B8AFB',
+    color: '#DD344C',
     icon: LockOutlinedIcon,
     isValid: (value) =>
       /^arn:aws:kms:[a-z0-9-]+:\d{12}:key\/[a-f0-9-]+$/i.test(value),
@@ -92,7 +98,7 @@ const resourceTypes: Array<{
     label: 'Lambda Functions',
     helper: 'Full AWS Lambda function ARN',
     placeholder: 'arn:aws:lambda:region:account:function:name',
-    color: '#5AA9E6',
+    color: '#ED7100',
     icon: FunctionsOutlinedIcon,
     isValid: (value) =>
       /^arn:aws:lambda:[a-z0-9-]+:\d{12}:function:.+$/i.test(value),
