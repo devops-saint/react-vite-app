@@ -8,6 +8,7 @@ import {
   EnvironmentName,
   RequestedBy,
   CurrentWhitelist,
+  matchesStatusGroup,
 } from '@/types/request.types';
 import { config } from '@/config';
 import { v4 as uuidv4 } from 'uuid';
@@ -311,25 +312,14 @@ export const requestService = {
       // lambda/handler.py WEBHOOK_STATUS_MAP + handle_stage_event), not
       // the older SUBMITTED/BRANCH_CREATED/MERGED-style placeholder
       // statuses this used to check for, which the backend never sends.
-      const isPromotionInProgress = (status: string) =>
-        /_MERGED_AWAITING_/.test(status);
-
+      // Bucketing lives in matchesStatusGroup (request.types.ts) - shared
+      // with MyRequestsPage's statusGroup filter so a Dashboard card's
+      // count and what clicking it filters down to can never drift apart.
       const stats = {
-        pending: requests.filter(
-          (r) =>
-            r.status === 'REQUEST_RECEIVED' ||
-            r.status === 'QUEUED' ||
-            r.status === 'PR_CREATED' ||
-            r.status === 'PR_UPDATED' ||
-            r.status === 'PR_NEEDS_WORK' ||
-            r.status === 'SYNC_FAILED' ||
-            isPromotionInProgress(r.status)
-        ).length,
-        approved: requests.filter((r) => r.status === 'PR_APPROVED').length,
-        rejected: requests.filter(
-          (r) => r.status === 'PR_DECLINED' || r.status === 'PR_DELETED'
-        ).length,
-        completed: requests.filter((r) => r.status === 'COMPLETED').length,
+        pending: requests.filter((r) => matchesStatusGroup(r.status, 'pending')).length,
+        approved: requests.filter((r) => matchesStatusGroup(r.status, 'approved')).length,
+        rejected: requests.filter((r) => matchesStatusGroup(r.status, 'rejected')).length,
+        completed: requests.filter((r) => matchesStatusGroup(r.status, 'completed')).length,
       };
 
       console.log('[REQUEST SERVICE] Dashboard stats:', stats);

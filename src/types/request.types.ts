@@ -210,6 +210,59 @@ export const getStatusConfig = (
   STATUS_CONFIG[status as RequestStatus] ?? { label: status || 'Unknown', color: 'default' };
 
 // ========================================
+// Dashboard status groups
+// ========================================
+// The Dashboard's four summary cards (Pending/Approved/Rejected/Completed)
+// each bucket several raw backend statuses together - this is the single
+// source of truth for that bucketing, used both by requestService's
+// getDashboardStats (to compute the card counts) and by MyRequestsPage (so
+// clicking a card can filter My Requests down to exactly the same set the
+// card counted - see the `statusGroup` query param there). Keeping one
+// definition means the two can never quietly drift apart.
+export type StatusGroup = 'pending' | 'approved' | 'rejected' | 'completed';
+
+export const STATUS_GROUPS: StatusGroup[] = ['pending', 'approved', 'rejected', 'completed'];
+
+export const STATUS_GROUP_LABELS: Record<StatusGroup, string> = {
+  pending: 'Pending Requests',
+  approved: 'Approved Requests',
+  rejected: 'Rejected Requests',
+  completed: 'Completed Requests',
+};
+
+// A request sitting at e.g. DEV_MERGED_AWAITING_QA between promotion
+// stages - not a status in the RequestStatus union above (it's assembled
+// by the backend from ENV_TO_BRANCH, not a fixed literal), so it's matched
+// by pattern instead of an exact equality check.
+const isPromotionInProgress = (status: string): boolean => /_MERGED_AWAITING_/.test(status);
+
+export const matchesStatusGroup = (status: string, group: StatusGroup): boolean => {
+  switch (group) {
+    case 'pending':
+      return (
+        status === 'REQUEST_RECEIVED' ||
+        status === 'QUEUED' ||
+        status === 'PR_CREATED' ||
+        status === 'PR_UPDATED' ||
+        status === 'PR_NEEDS_WORK' ||
+        status === 'SYNC_FAILED' ||
+        isPromotionInProgress(status)
+      );
+    case 'approved':
+      return status === 'PR_APPROVED';
+    case 'rejected':
+      return status === 'PR_DECLINED' || status === 'PR_DELETED';
+    case 'completed':
+      return status === 'COMPLETED';
+    default:
+      return false;
+  }
+};
+
+export const isStatusGroup = (value: string | null): value is StatusGroup =>
+  value !== null && (STATUS_GROUPS as string[]).includes(value);
+
+// ========================================
 // API Gateway Payload Types
 // ========================================
 

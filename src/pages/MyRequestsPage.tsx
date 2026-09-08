@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { config, buildRequestDetailsPath } from '@/config';
 import {
   Box,
@@ -26,13 +26,18 @@ import { useAuth } from '@/auth';
 import {
   WhitelistRequest,
   RequestStatus,
+  StatusGroup,
   getStatusConfig,
+  matchesStatusGroup,
+  isStatusGroup,
+  STATUS_GROUP_LABELS,
 } from '@/types/request.types';
 import { Loader, EmptyState, ErrorState } from '@/components/common';
 
 export function MyRequestsPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [requests, setRequests] = useState<WhitelistRequest[]>([]);
@@ -42,6 +47,15 @@ export function MyRequestsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<RequestStatus | 'ALL'>(
     'ALL'
+  );
+  // Set when arriving from a Dashboard stat card (e.g. /requests?statusGroup=pending)
+  // - see handleStatCardClick in DashboardPage.tsx and matchesStatusGroup in
+  // request.types.ts, the shared definition both sides use so a card's count
+  // and what clicking it filters down to can never drift apart. Read once on
+  // mount: a fresh navigation from the Dashboard always remounts this page.
+  const initialGroupParam = searchParams.get('statusGroup');
+  const [groupFilter, setGroupFilter] = useState<StatusGroup | null>(
+    isStatusGroup(initialGroupParam) ? initialGroupParam : null
   );
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
@@ -84,9 +98,24 @@ export function MyRequestsPage() {
       filtered = filtered.filter((req) => req.status === statusFilter);
     }
 
+    // Apply the Dashboard-card status group, if arrived here via one
+    // (combines with the exact-status dropdown above, not a replacement
+    // for it - both are just narrowing filters on the same list).
+    if (groupFilter) {
+      filtered = filtered.filter((req) => matchesStatusGroup(req.status, groupFilter));
+    }
+
     setFilteredRequests(filtered);
     setPage(0); // Reset to first page when filters change
-  }, [searchQuery, statusFilter, requests]);
+  }, [searchQuery, statusFilter, groupFilter, requests]);
+
+  const clearGroupFilter = () => {
+    setGroupFilter(null);
+    setSearchParams((params) => {
+      params.delete('statusGroup');
+      return params;
+    });
+  };
 
   const handleChangePage = (_event: unknown, newPage: number) => {
     setPage(newPage);
@@ -213,6 +242,17 @@ export function MyRequestsPage() {
           </TextField>
         </Box>
       </Paper>
+
+      {/* Active Dashboard status-group filter, if arrived here via a stat card */}
+      {groupFilter && (
+        <Box sx={{ mb: 2 }}>
+          <Chip
+            label={`Filtered from Dashboard: ${STATUS_GROUP_LABELS[groupFilter]}`}
+            color="primary"
+            onDelete={clearGroupFilter}
+          />
+        </Box>
+      )}
 
       {/* Results Count */}
       <Box sx={{ mb: 2 }}>

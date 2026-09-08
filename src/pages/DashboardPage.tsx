@@ -7,6 +7,7 @@ import {
   Typography,
   Grid,
   Card,
+  CardActionArea,
   CardContent,
   Paper,
   Table,
@@ -29,7 +30,7 @@ import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import Inventory2Icon from '@mui/icons-material/Inventory2';
 import { useAuth } from '@/auth';
 import { requestService } from '@/api/services';
-import { WhitelistRequest, getStatusConfig } from '@/types/request.types';
+import { WhitelistRequest, getStatusConfig, StatusGroup } from '@/types/request.types';
 import { Loader } from '@/components/common';
 
 export function DashboardPage() {
@@ -67,6 +68,13 @@ export function DashboardPage() {
 
   const handleRowClick = (requestId: string) => {
     navigate(buildRequestDetailsPath(requestId));
+  };
+
+  // Sends the viewer to My Requests pre-filtered to exactly the statuses
+  // this card counted (see matchesStatusGroup in request.types.ts, also
+  // used by requestService.getDashboardStats for the counts themselves).
+  const handleStatCardClick = (group: StatusGroup) => {
+    navigate(`${config.routes.requests}?statusGroup=${group}`);
   };
 
   if (loading) {
@@ -134,6 +142,7 @@ export function DashboardPage() {
       <Grid container spacing={3} sx={{ mb: 4 }}>
         <Grid item xs={12} sm={6} md={3}>
           <Card>
+          <CardActionArea onClick={() => handleStatCardClick('pending')}>
             <CardContent>
               <Box
                 sx={{
@@ -159,11 +168,13 @@ export function DashboardPage() {
                 />
               </Box>
             </CardContent>
-          </Card>
+          </CardActionArea>
+        </Card>
         </Grid>
 
         <Grid item xs={12} sm={6} md={3}>
           <Card>
+          <CardActionArea onClick={() => handleStatCardClick('approved')}>
             <CardContent>
               <Box
                 sx={{
@@ -189,11 +200,13 @@ export function DashboardPage() {
                 />
               </Box>
             </CardContent>
-          </Card>
+          </CardActionArea>
+        </Card>
         </Grid>
 
         <Grid item xs={12} sm={6} md={3}>
           <Card>
+          <CardActionArea onClick={() => handleStatCardClick('rejected')}>
             <CardContent>
               <Box
                 sx={{
@@ -219,11 +232,13 @@ export function DashboardPage() {
                 />
               </Box>
             </CardContent>
-          </Card>
+          </CardActionArea>
+        </Card>
         </Grid>
 
         <Grid item xs={12} sm={6} md={3}>
           <Card>
+          <CardActionArea onClick={() => handleStatCardClick('completed')}>
             <CardContent>
               <Box
                 sx={{
@@ -249,7 +264,8 @@ export function DashboardPage() {
                 />
               </Box>
             </CardContent>
-          </Card>
+          </CardActionArea>
+        </Card>
         </Grid>
       </Grid>
 
