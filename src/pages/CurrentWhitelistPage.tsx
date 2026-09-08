@@ -98,6 +98,7 @@ export function CurrentWhitelistPage() {
             label="Market"
             value={marketCode}
             SelectProps={{ displayEmpty: true }}
+            InputLabelProps={{ shrink: true }}
             onChange={(event) => setMarketCode(event.target.value)}
           >
             <MenuItem value="">
@@ -114,6 +115,7 @@ export function CurrentWhitelistPage() {
             label="Environment"
             value={environment}
             SelectProps={{ displayEmpty: true }}
+            InputLabelProps={{ shrink: true }}
             onChange={(event) =>
               setEnvironment(event.target.value as '' | (typeof ENVIRONMENTS)[number])
             }

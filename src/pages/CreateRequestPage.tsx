@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { config } from '@/config';
 import {
@@ -29,7 +29,7 @@ import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
 import { requestService } from '@/api/services';
 import { useAuth } from '@/auth';
 import { Snackbar } from '@/components/common';
-import { CreateRequestFormData } from '@/types/request.types';
+import { CreateRequestFormData, CurrentWhitelist } from '@/types/request.types';
 
 type ResourceKey =
   's3Buckets' | 'secretsManager' | 'kmsKeys' | 'lambdaFunctions';
@@ -105,6 +105,20 @@ const emptyResources = (): ResourceState => ({
   PRD: { s3Buckets: [], secretsManager: [], kmsKeys: [], lambdaFunctions: [] },
 });
 
+// Maps a staged resource type to the matching field on CurrentWhitelist -
+// the same read-live-from-the-repo data the Current Whitelist page shows
+// (see requestService.getCurrentWhitelist / GET /dpc/whitelist/{market}/{env}),
+// reused here so a request can't be staged for something already live.
+const WHITELIST_FIELD: Record<
+  ResourceKey,
+  keyof Pick<CurrentWhitelist, 'buckets' | 'secrets' | 'kmsKeys' | 'functions'>
+> = {
+  s3Buckets: 'buckets',
+  secretsManager: 'secrets',
+  kmsKeys: 'kmsKeys',
+  lambdaFunctions: 'functions',
+};
+
 export function CreateRequestPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -130,6 +144,56 @@ export function CreateRequestPage() {
     message: string;
     severity: 'success' | 'error' | 'info' | 'warning';
   }>({ open: false, message: '', severity: 'info' });
+
+  // What's already live for (market, environment), fetched on demand as
+  // the requester picks a market / switches environment tabs, and used to
+  // flag a resource they're about to stage that's already whitelisted -
+  // see isAlreadyWhitelisted and its use in addResource below. Keyed by
+  // "market:env" so switching markets never serves another market's cache.
+  const [whitelistCache, setWhitelistCache] = useState<
+    Record<string, CurrentWhitelist>
+  >({});
+  const fetchedWhitelistKeys = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!marketCode) return;
+    const key = `${marketCode}:${activeEnvironment}`;
+    if (fetchedWhitelistKeys.current.has(key)) return;
+    fetchedWhitelistKeys.current.add(key);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await requestService.getCurrentWhitelist(
+          marketCode,
+          activeEnvironment
+        );
+        if (!cancelled) {
+          setWhitelistCache((current) => ({ ...current, [key]: data }));
+        }
+      } catch (error) {
+        // Best-effort only: this check is a convenience, not a hard gate,
+        // so a failed lookup just means it's silently skipped rather than
+        // blocking the requester from staging resources. Un-mark the key
+        // so a later retry (e.g. switching away and back) tries again.
+        console.error(
+          '[CreateRequestPage] Failed to check current whitelist:',
+          error
+        );
+        fetchedWhitelistKeys.current.delete(key);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [marketCode, activeEnvironment]);
+
+  const isAlreadyWhitelisted = (resourceKey: ResourceKey, value: string) => {
+    const data = whitelistCache[`${marketCode}:${activeEnvironment}`];
+    if (!data || !data.exists) return false;
+    return data[WHITELIST_FIELD[resourceKey]].some(
+      (item) => item.toLowerCase() === value.toLowerCase()
+    );
+  };
 
   const market = config.markets.find((item) => item.code === marketCode);
   const totalResources = useMemo(
@@ -184,6 +248,13 @@ export function CreateRequestPage() {
       setResourceErrors((current) => ({
         ...current,
         [resourceType.key]: 'This resource has already been added.',
+      }));
+      return;
+    }
+    if (isAlreadyWhitelisted(resourceType.key, value)) {
+      setResourceErrors((current) => ({
+        ...current,
+        [resourceType.key]: `This is already whitelisted in ${activeEnvironment} for ${marketCode || 'this market'} - no need to request it again.`,
       }));
       return;
     }
@@ -422,7 +493,10 @@ export function CreateRequestPage() {
                     ?.label
                 }
               </strong>
-              . Your entries in other environments are kept as-is.
+              . Your entries in other environments are kept as-is.{' '}
+              {marketCode
+                ? "New entries are checked against what's already whitelisted for this market/environment."
+                : 'Select a market above to also check new entries against what\'s already whitelisted.'}
             </Alert>
             <Box
               sx={{
