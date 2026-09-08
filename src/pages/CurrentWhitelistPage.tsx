@@ -13,8 +13,13 @@ import {
   Alert,
   Tooltip,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import Inventory2Icon from '@mui/icons-material/Inventory2';
+import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
+import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import FunctionsOutlinedIcon from '@mui/icons-material/FunctionsOutlined';
 import { Loader, ErrorState } from '@/components/common';
 import { config } from '@/config';
 import { requestService } from '@/api/services';
@@ -22,11 +27,21 @@ import { CurrentWhitelist } from '@/types/request.types';
 
 const ENVIRONMENTS = ['DEV', 'QA', 'PRD'] as const;
 
-const SECTIONS: { key: keyof Pick<CurrentWhitelist, 'buckets' | 'secrets' | 'kmsKeys' | 'functions'>; label: string }[] = [
-  { key: 'buckets', label: 'S3 Buckets' },
-  { key: 'secrets', label: 'Secrets Manager' },
-  { key: 'kmsKeys', label: 'KMS Keys' },
-  { key: 'functions', label: 'Lambda Functions' },
+// Colors match AWS's own Architecture Icons category palette, not a
+// decorative choice - Storage (S3) is AWS's "Endor" green, Security,
+// Identity & Compliance (Secrets Manager + KMS - the same category in
+// AWS's own icon set, hence the same color) is "Mars" red, and Compute
+// (Lambda) is "Smile" orange.
+const SECTIONS: {
+  key: keyof Pick<CurrentWhitelist, 'buckets' | 'secrets' | 'kmsKeys' | 'functions'>;
+  label: string;
+  color: string;
+  icon: typeof StorageOutlinedIcon;
+}[] = [
+  { key: 'buckets', label: 'S3 Buckets', color: '#7AA116', icon: StorageOutlinedIcon },
+  { key: 'secrets', label: 'Secrets Manager', color: '#DD344C', icon: VpnKeyOutlinedIcon },
+  { key: 'kmsKeys', label: 'KMS Keys', color: '#DD344C', icon: LockOutlinedIcon },
+  { key: 'functions', label: 'Lambda Functions', color: '#ED7100', icon: FunctionsOutlinedIcon },
 ];
 
 export function CurrentWhitelistPage() {
@@ -167,9 +182,16 @@ export function CurrentWhitelistPage() {
             <Grid container spacing={2}>
               {SECTIONS.map((section) => {
                 const items = whitelist[section.key];
+                const Icon = section.icon;
                 return (
                   <Grid item xs={12} sm={6} key={section.key}>
-                    <Paper sx={{ p: 3, height: '100%' }}>
+                    <Paper
+                      sx={{
+                        p: 3,
+                        height: '100%',
+                        borderTop: `3px solid ${section.color}`,
+                      }}
+                    >
                       <Box
                         sx={{
                           display: 'flex',
@@ -178,10 +200,29 @@ export function CurrentWhitelistPage() {
                           mb: 1,
                         }}
                       >
-                        <Typography variant="h6" fontWeight="bold">
-                          {section.label}
-                        </Typography>
-                        <Chip size="small" label={items.length} />
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <Box
+                            sx={{
+                              color: section.color,
+                              display: 'grid',
+                              placeItems: 'center',
+                            }}
+                          >
+                            <Icon fontSize="small" />
+                          </Box>
+                          <Typography variant="h6" fontWeight="bold">
+                            {section.label}
+                          </Typography>
+                        </Box>
+                        <Chip
+                          size="small"
+                          label={items.length}
+                          sx={{
+                            bgcolor: alpha(section.color, 0.12),
+                            color: section.color,
+                            fontWeight: 700,
+                          }}
+                        />
                       </Box>
                       <Divider sx={{ mb: 2 }} />
                       {items.length === 0 ? (
@@ -189,15 +230,35 @@ export function CurrentWhitelistPage() {
                           None whitelisted in this environment yet.
                         </Typography>
                       ) : (
-                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                        // Full rows instead of Chips - a Chip's label is
+                        // built to truncate long text with an ellipsis,
+                        // which was cutting real ARNs off mid-string.
+                        // These wrap instead, so the whole value is
+                        // always visible.
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                           {items.map((value) => (
-                            <Chip
+                            <Box
                               key={value}
-                              label={value}
-                              size="small"
-                              variant="outlined"
-                              sx={{ fontFamily: 'monospace', maxWidth: '100%' }}
-                            />
+                              sx={{
+                                px: 1.5,
+                                py: 0.75,
+                                borderRadius: 1,
+                                bgcolor: alpha(section.color, 0.06),
+                                border: '1px solid',
+                                borderColor: alpha(section.color, 0.25),
+                              }}
+                            >
+                              <Typography
+                                variant="body2"
+                                sx={{
+                                  fontFamily: 'monospace',
+                                  wordBreak: 'break-all',
+                                  lineHeight: 1.5,
+                                }}
+                              >
+                                {value}
+                              </Typography>
+                            </Box>
                           ))}
                         </Box>
                       )}
