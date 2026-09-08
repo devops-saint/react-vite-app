@@ -309,7 +309,7 @@ export function DashboardPage() {
                       </Typography>
                     </TableCell>
                     <TableCell>
-                      {request.marketCode} - {request.marketName}
+                      {request.marketCode.toUpperCase()} - {request.marketName}
                     </TableCell>
                     <TableCell>
                       <Chip

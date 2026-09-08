@@ -76,7 +76,7 @@ export function CurrentWhitelistPage() {
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
         <Inventory2Icon color="primary" />
         <Typography variant="h4" fontWeight="bold">
-          Current Whitelist
+          View Whitelist
         </Typography>
       </Box>
       <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
@@ -157,13 +157,9 @@ export function CurrentWhitelistPage() {
 
       {!loading && !error && whitelist && (
         <>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2, fontFamily: 'monospace' }}>
-            {whitelist.filePath}
-          </Typography>
-
           {!whitelist.exists ? (
             <Alert severity="info">
-              Nothing has been whitelisted for {market?.code || whitelist.marketCode} in{' '}
+              Nothing has been whitelisted for {(market?.code || whitelist.marketCode).toUpperCase()} in{' '}
               {whitelist.environment} yet - this environment's config file doesn't exist in the
               repo yet.
             </Alert>

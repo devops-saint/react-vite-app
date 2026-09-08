@@ -231,6 +231,7 @@ export function CreateRequestPage() {
   }, [format, resources]);
 
   const addResource = (resourceType: (typeof resourceTypes)[number]) => {
+    if (!marketCode) return;
     const value = drafts[resourceType.key].trim();
     if (!value) return;
     if (!resourceType.isValid(value)) {
@@ -452,9 +453,17 @@ export function CreateRequestPage() {
             <ToggleButtonGroup
               exclusive
               value={activeEnvironment}
-              onChange={(_event, value: EnvironmentKey | null) =>
-                value && setActiveEnvironment(value)
-              }
+              onChange={(_event, value: EnvironmentKey | null) => {
+                if (!value) return;
+                setActiveEnvironment(value);
+                setDrafts({
+                  s3Buckets: '',
+                  secretsManager: '',
+                  kmsKeys: '',
+                  lambdaFunctions: '',
+                });
+                setResourceErrors({});
+              }}
               aria-label="Select environment"
               size="small"
               sx={{ mb: 1.5 }}
@@ -544,17 +553,24 @@ export function CreateRequestPage() {
                     </Box>
                     <Typography
                       variant="caption"
-                      color="text.secondary"
+                      color={marketCode ? 'text.secondary' : 'warning.main'}
                       display="block"
                       sx={{ minHeight: 36 }}
                     >
-                      {resourceType.helper}
+                      {marketCode
+                        ? resourceType.helper
+                        : 'Select a market above before adding resources.'}
                     </Typography>
                     <Box sx={{ display: 'flex', gap: 1, mt: 1.25 }}>
                       <TextField
                         size="small"
                         fullWidth
-                        placeholder={resourceType.placeholder}
+                        disabled={!marketCode}
+                        placeholder={
+                          marketCode
+                            ? resourceType.placeholder
+                            : 'Select a market first'
+                        }
                         value={drafts[resourceType.key]}
                         error={Boolean(resourceErrors[resourceType.key])}
                         onChange={(event) => {
@@ -576,6 +592,7 @@ export function CreateRequestPage() {
                       />
                       <Button
                         variant="outlined"
+                        disabled={!marketCode}
                         onClick={() => addResource(resourceType)}
                         startIcon={<AddIcon />}
                       >

@@ -47,7 +47,7 @@ const menuItems: MenuItem[] = [
     path: config.routes.requests,
   },
   {
-    title: 'Current Whitelist',
+    title: 'View Whitelist',
     icon: <Inventory2Icon />,
     path: config.routes.whitelist,
   },

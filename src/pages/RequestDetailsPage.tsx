@@ -238,7 +238,7 @@ export function RequestDetailsPage() {
                   Market
                 </Typography>
                 <Typography variant="body1">
-                  {request.marketCode} - {request.marketName}
+                  {request.marketCode.toUpperCase()} - {request.marketName}
                 </Typography>
               </Grid>
               <Grid item xs={12}>
@@ -434,7 +434,7 @@ export function RequestDetailsPage() {
               <Alert severity="info" sx={{ mb: hasRole(UserRole.ADMIN) ? 2 : 0 }}>
                 This request is queued
                 {request.blockedBy ? ` behind ${request.blockedBy}` : ''} for
-                market {request.marketCode} - it will start automatically
+                market {request.marketCode.toUpperCase()} - it will start automatically
                 once that request completes.
               </Alert>
               {hasRole(UserRole.ADMIN) && (
