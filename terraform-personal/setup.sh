@@ -34,7 +34,6 @@
 #   MARKETS                 "UK US"     (space-separated market codes)
 #   AWS_REGION              eu-west-1
 #   GITHUB_TOKEN_SECRET_NAME github-token
-#   PR_APPROVER_USERNAMES   ""          (comma-separated)
 #   PR_APPROVER_EMAILS      ""          (comma-separated)
 #   DOMAIN                  ""          (verified SES domain; leave
 #                                        empty to keep notifications off)
@@ -71,7 +70,6 @@ REPO_BASE_PATH="${REPO_BASE_PATH:-markets}"
 MARKETS="${MARKETS:-UK US}"
 AWS_REGION="${AWS_REGION:-eu-west-1}"
 GITHUB_TOKEN_SECRET_NAME="${GITHUB_TOKEN_SECRET_NAME:-github-token}"
-PR_APPROVER_USERNAMES="${PR_APPROVER_USERNAMES:-}"
 PR_APPROVER_EMAILS="${PR_APPROVER_EMAILS:-}"
 DOMAIN="${DOMAIN:-}"
 
@@ -149,7 +147,6 @@ github_token_secret_name = "${GITHUB_TOKEN_SECRET_NAME}"
 
 domain = "${DOMAIN}"
 
-pr_approver_usernames = $(hcl_list "$PR_APPROVER_USERNAMES")
 pr_approver_emails    = $(hcl_list "$PR_APPROVER_EMAILS")
 
 cors_allow_origins = ["http://localhost:3000", "http://localhost:5173"]

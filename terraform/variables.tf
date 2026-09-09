@@ -52,14 +52,8 @@ variable "bitbucket_token_secret_name" {
   default     = "bitbucket-token"
 }
 
-variable "pr_approver_usernames" {
-  description = "Bitbucket usernames added as reviewers on every GitOps pull request. Leave empty to skip adding reviewers."
-  type        = list(string)
-  default     = []
-}
-
 variable "pr_approver_emails" {
-  description = "Email addresses notified via SES when a GitOps pull request is opened. Not assumed to match pr_approver_usernames one-to-one."
+  description = "Email addresses notified via SES when a GitOps pull request is opened. Approvers are notified by email only - they are not added as PR reviewers."
   type        = list(string)
   default     = []
 }

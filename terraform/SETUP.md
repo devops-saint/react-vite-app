@@ -59,8 +59,7 @@ initialize.
 
    Optional variables (all have sensible defaults - see the header comment
    in `setup.sh` for the full list): `REPO_BASE_PATH`, `AWS_REGION`,
-   `BITBUCKET_TOKEN_SECRET_NAME`, `PR_APPROVER_USERNAMES`,
-   `PR_APPROVER_EMAILS`, `DOMAIN`.
+   `BITBUCKET_TOKEN_SECRET_NAME`, `PR_APPROVER_EMAILS`, `DOMAIN`.
 
 4. The script prints a summary when it finishes (API URL, webhook URL, DLQ
    URL, sweep rule name). It has already updated `../.env` for you (just

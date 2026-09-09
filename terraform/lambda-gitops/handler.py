@@ -74,12 +74,6 @@ GIT_TOKEN = ""
 # APPROVERS / NOTIFICATIONS CONFIG
 # =====================================================
 
-PR_APPROVER_USERNAMES = [
-    name.strip()
-    for name in os.environ.get("PR_APPROVER_USERNAMES", "").split(",")
-    if name.strip()
-]
-
 PR_APPROVER_EMAILS = [
     email.strip()
     for email in os.environ.get("PR_APPROVER_EMAILS", "").split(",")
@@ -674,11 +668,6 @@ def create_pull_request(from_ref, to_ref=None, title=None, description=None):
             "id": f"refs/heads/{to_ref}"
         }
     }
-    if PR_APPROVER_USERNAMES:
-        payload["reviewers"] = [
-            {"user": {"name": username}}
-            for username in PR_APPROVER_USERNAMES
-        ]
     response = _request_with_retry(
         "POST",
         url,

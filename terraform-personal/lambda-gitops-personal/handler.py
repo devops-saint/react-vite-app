@@ -74,15 +74,9 @@ GITHUB_TOKEN = ""
 # =====================================================
 # No verified SES domain for personal testing - leave DOMAIN unset in
 # terraform.tfvars and every notify_* function below no-ops on its own
-# (see the `if not NOTIFICATION_FROM_EMAIL` guards). Nothing else to
-# change: approvals/reviewers still work via PR_APPROVER_USERNAMES even
-# with notifications off.
-
-PR_APPROVER_USERNAMES = [
-    name.strip()
-    for name in os.environ.get("PR_APPROVER_USERNAMES", "").split(",")
-    if name.strip()
-]
+# (see the `if not NOTIFICATION_FROM_EMAIL` guards). PR reviewers are no
+# longer auto-assigned (see create_pull_request) - approvers are only
+# ever notified by email now, never added as GitHub PR reviewers.
 
 PR_APPROVER_EMAILS = [
     email.strip()
@@ -637,34 +631,6 @@ def create_pull_request(head_branch, base_branch=None, title=None, body=None):
             "Create pull request"
         )
         pr = response.json()
-
-    # GitHub adds reviewers via a separate call (unlike Bitbucket, which
-    # takes them in the create-PR payload) - best-effort, must not fail
-    # PR creation itself if it errors (including a connection error, not
-    # just an HTTP error - broadened from the original except clause,
-    # which only caught HTTPError and would otherwise let a GitHub
-    # outage here fail the whole PR creation despite the PR already
-    # existing).
-    if PR_APPROVER_USERNAMES:
-        try:
-            reviewers_url = (
-                f"{GITHUB_API_URL}/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
-                f"/pulls/{pr['number']}/requested_reviewers"
-            )
-            rresponse = _request_with_retry(
-                "POST",
-                reviewers_url,
-                operation="Add reviewers",
-                headers={
-                    **get_headers(),
-                    "Content-Type": "application/json"
-                },
-                json={"reviewers": PR_APPROVER_USERNAMES},
-                timeout=30
-            )
-            check_response(rresponse, "Add reviewers")
-        except Exception as error:
-            print(f"[REVIEWERS] Failed to add reviewers to PR #{pr['number']}: {error}")
 
     return pr
 

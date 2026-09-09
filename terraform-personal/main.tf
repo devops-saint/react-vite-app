@@ -312,7 +312,6 @@ resource "aws_lambda_function" "gitops" {
       GITHUB_OWNER          = var.github_owner
       GITHUB_REPO           = var.github_repo
       REPO_BASE_PATH        = var.repo_base_path
-      PR_APPROVER_USERNAMES = join(",", var.pr_approver_usernames)
       PR_APPROVER_EMAILS    = join(",", var.pr_approver_emails)
       DOMAIN                = var.domain
     }
