@@ -135,8 +135,8 @@ export interface RequestDetails extends WhitelistRequest {
 // Dashboard Statistics
 export interface DashboardStats {
   pending: number;
-  approved: number;
-  rejected: number;
+  inProgress: number;
+  actionNeeded: number;
   completed: number;
 }
 
@@ -210,54 +210,93 @@ export const getStatusConfig = (
   STATUS_CONFIG[status as RequestStatus] ?? { label: status || 'Unknown', color: 'default' };
 
 // ========================================
-// Dashboard status groups
+// User-facing status (collapsed)
 // ========================================
-// The Dashboard's four summary cards (Pending/Approved/Rejected/Completed)
-// each bucket several raw backend statuses together - this is the single
-// source of truth for that bucketing, used both by requestService's
-// getDashboardStats (to compute the card counts) and by MyRequestsPage (so
-// clicking a card can filter My Requests down to exactly the same set the
-// card counted - see the `statusGroup` query param there). Keeping one
-// definition means the two can never quietly drift apart.
-export type StatusGroup = 'pending' | 'approved' | 'rejected' | 'completed';
+// The backend's real status vocabulary (REQUEST_RECEIVED, QUEUED,
+// PR_CREATED, PR_UPDATED, PR_APPROVED, PR_NEEDS_WORK, PR_DECLINED,
+// PR_DELETED, SYNC_FAILED, COMPLETED, plus dynamic
+// "<STAGE>_MERGED_AWAITING_<NEXT>" promotion states) is workflow/Git
+// machinery - useful in the audit timeline, not something an end user
+// should have to parse to know "where is my request". Every status badge
+// shown to a user (Dashboard cards, request lists, the request-details
+// header) is collapsed into this small, fixed set instead. This is the
+// single source of truth for that collapsing - requestService's
+// getDashboardStats (card counts), DashboardPage/MyRequestsPage/
+// RequestDetailsPage (badges) and the statusGroup query param all derive
+// from getUserFacingStatus so they can never drift apart.
+export type UserFacingStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED';
 
-export const STATUS_GROUPS: StatusGroup[] = ['pending', 'approved', 'rejected', 'completed'];
+export const USER_FACING_STATUSES: UserFacingStatus[] = ['PENDING', 'IN_PROGRESS', 'COMPLETED'];
 
-export const STATUS_GROUP_LABELS: Record<StatusGroup, string> = {
-  pending: 'Pending Requests',
-  approved: 'Approved Requests',
-  rejected: 'Rejected Requests',
-  completed: 'Completed Requests',
+// Neutral palette - deliberately not MUI's 'success'/'error' (bright
+// green/red), which reads as "this succeeded" / "this failed". A declined
+// or deleted PR lands under COMPLETED too (the request's lifecycle has
+// ended - the requester is already told the outcome by email, see
+// notify_requester_merged/notify_approvers_* in the Lambdas) rather than
+// a separate "failed" bucket, so COMPLETED means "nothing more will
+// happen here", not "it was approved". `chipColor` sticks to MUI Chip's
+// built-in palette keys (kept off 'success'/'error' everywhere in this
+// map) so it renders consistently with the rest of the theme without
+// introducing bespoke hex values.
+export const USER_FACING_STATUS_CONFIG: Record<
+  UserFacingStatus,
+  { label: string; chipColor: 'default' | 'primary' | 'info' }
+> = {
+  PENDING: { label: 'Pending', chipColor: 'default' },
+  IN_PROGRESS: { label: 'In Progress', chipColor: 'info' },
+  COMPLETED: { label: 'Completed', chipColor: 'primary' },
 };
 
-// A request sitting at e.g. DEV_MERGED_AWAITING_QA between promotion
-// stages - not a status in the RequestStatus union above (it's assembled
-// by the backend from ENV_TO_BRANCH, not a fixed literal), so it's matched
-// by pattern instead of an exact equality check.
-const isPromotionInProgress = (status: string): boolean => /_MERGED_AWAITING_/.test(status);
-
-export const matchesStatusGroup = (status: string, group: StatusGroup): boolean => {
-  switch (group) {
-    case 'pending':
-      return (
-        status === 'REQUEST_RECEIVED' ||
-        status === 'QUEUED' ||
-        status === 'PR_CREATED' ||
-        status === 'PR_UPDATED' ||
-        status === 'PR_NEEDS_WORK' ||
-        status === 'SYNC_FAILED' ||
-        isPromotionInProgress(status)
-      );
-    case 'approved':
-      return status === 'PR_APPROVED';
-    case 'rejected':
-      return status === 'PR_DECLINED' || status === 'PR_DELETED';
-    case 'completed':
-      return status === 'COMPLETED';
+// Maps any raw backend status string to the small user-facing set above.
+// Everything else - PR_CREATED, PR_UPDATED, PR_APPROVED, PR_NEEDS_WORK,
+// SYNC_FAILED (auto-retried), a dynamic "<STAGE>_MERGED_AWAITING_<NEXT>"
+// promotion status, or any status the frontend doesn't recognise yet (a
+// new webhook event type, UNKNOWN, ...) - reads as "still moving" to an
+// end user rather than erroring or silently disappearing from the UI.
+export const getUserFacingStatus = (status: string): UserFacingStatus => {
+  switch (status) {
+    case 'REQUEST_RECEIVED':
+    case 'QUEUED':
+    case 'SUBMITTED':
+      return 'PENDING';
+    case 'PR_DECLINED':
+    case 'PR_DELETED':
+    case 'REJECTED':
+    case 'COMPLETED':
+      return 'COMPLETED';
     default:
-      return false;
+      return 'IN_PROGRESS';
   }
 };
+
+// ========================================
+// Dashboard status groups
+// ========================================
+// Lowercase, URL-safe aliases of UserFacingStatus (used as the
+// `?statusGroup=` query param and as getDashboardStats' result keys) -
+// kept as a distinct type from UserFacingStatus only because query-string
+// values and object keys read more naturally lowercase/snake_case than
+// SCREAMING_CASE.
+export type StatusGroup = 'pending' | 'in_progress' | 'completed';
+
+export const STATUS_GROUPS: StatusGroup[] = ['pending', 'in_progress', 'completed'];
+
+export const STATUS_GROUP_LABELS: Record<StatusGroup, string> = {
+  pending: 'Pending',
+  in_progress: 'In Progress',
+  completed: 'Completed',
+};
+
+const USER_FACING_TO_GROUP: Record<UserFacingStatus, StatusGroup> = {
+  PENDING: 'pending',
+  IN_PROGRESS: 'in_progress',
+  COMPLETED: 'completed',
+};
+
+export const toStatusGroup = (status: UserFacingStatus): StatusGroup => USER_FACING_TO_GROUP[status];
+
+export const matchesStatusGroup = (status: string, group: StatusGroup): boolean =>
+  toStatusGroup(getUserFacingStatus(status)) === group;
 
 export const isStatusGroup = (value: string | null): value is StatusGroup =>
   value !== null && (STATUS_GROUPS as string[]).includes(value);

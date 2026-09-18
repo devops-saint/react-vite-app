@@ -5,6 +5,7 @@ import { Header } from '@components/Header';
 import { Sidebar } from '@components/Sidebar';
 import { Footer } from '@components/Footer';
 import { Breadcrumbs } from '@components/Breadcrumbs';
+import { IntegrationDisclaimer } from '@components/IntegrationDisclaimer';
 import { Loader } from '@/components/common';
 
 export function DashboardLayout() {
@@ -21,31 +22,39 @@ export function DashboardLayout() {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       <Header onMenuClick={handleSidebarToggle} />
-      <Sidebar open={sidebarOpen} onClose={handleSidebarClose} />
 
-      <Box
-        component="main"
-        sx={{
-          flexGrow: 1,
-          bgcolor: 'background.default',
-          display: 'flex',
-          flexDirection: 'column',
-        }}
-      >
-        <Toolbar />
-        <Container
-          maxWidth="xl"
+      {/* Row below the fixed Header: Sidebar sits permanently in-flow on
+          desktop (md+) and pushes this row's content over, instead of
+          floating above it as a dismissible overlay. */}
+      <Box sx={{ display: 'flex', flexGrow: 1 }}>
+        <Sidebar open={sidebarOpen} onClose={handleSidebarClose} />
+
+        <Box
+          component="main"
           sx={{
-            mt: 3,
-            mb: 3,
             flexGrow: 1,
+            minWidth: 0,
+            bgcolor: 'background.default',
+            display: 'flex',
+            flexDirection: 'column',
           }}
         >
-          <Breadcrumbs />
-          <Suspense fallback={<Loader />}>
-            <Outlet />
-          </Suspense>
-        </Container>
+          <Toolbar />
+          <Container
+            maxWidth="xl"
+            sx={{
+              mt: 3,
+              mb: 3,
+              flexGrow: 1,
+            }}
+          >
+            <IntegrationDisclaimer />
+            <Breadcrumbs />
+            <Suspense fallback={<Loader />}>
+              <Outlet />
+            </Suspense>
+          </Container>
+        </Box>
       </Box>
 
       <Footer />

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { config } from '@/config';
+import { config, buildRequestDetailsPath } from '@/config';
 import {
   Alert,
   Box,
@@ -30,6 +30,7 @@ import { requestService } from '@/api/services';
 import { useAuth } from '@/auth';
 import { Snackbar } from '@/components/common';
 import { CreateRequestFormData, CurrentWhitelist } from '@/types/request.types';
+import { NEUTRAL_RESOURCE_COLOR } from '@/constants/resourceTypes';
 
 type ResourceKey =
   's3Buckets' | 'secretsManager' | 'kmsKeys' | 'lambdaFunctions';
@@ -46,12 +47,14 @@ const environments: Array<{
   { key: 'PRD', label: 'Production', color: '#E56B6F' },
 ];
 
-// Colors match AWS's own Architecture Icons category palette (same
-// mapping used on the View Whitelist page) rather than an arbitrary
-// decorative choice - Storage (S3) is AWS's "Endor" green, Security,
-// Identity & Compliance (Secrets Manager + KMS - the same category in
-// AWS's own icon set, hence the same color) is "Mars" red, and Compute
-// (Lambda) is "Smile" orange.
+// Icons match AWS's own Architecture Icons per resource type (kept as-is -
+// the shape is what makes each type recognizable). Color is intentionally
+// NOT AWS's category palette (Storage green, Security red, Compute
+// orange) - Secrets Manager and KMS Keys used to render in the same red
+// used elsewhere in the portal for errors/rejections. Every resource type
+// now shares NEUTRAL_RESOURCE_COLOR (the same constant used on Request
+// Details and View Whitelist), so color carries no per-type meaning here
+// either - only the icon does.
 const resourceTypes: Array<{
   key: ResourceKey;
   label: string;
@@ -66,7 +69,7 @@ const resourceTypes: Array<{
     label: 'S3 Buckets',
     helper: 'Bucket name, or a full S3 ARN',
     placeholder: 'my-app-uploads',
-    color: '#7AA116',
+    color: NEUTRAL_RESOURCE_COLOR,
     icon: StorageOutlinedIcon,
     isValid: (value) =>
       /^(arn:aws:s3:::[a-z0-9.-]{3,63}|[a-z0-9][a-z0-9.-]{1,61}[a-z0-9])$/i.test(
@@ -78,7 +81,7 @@ const resourceTypes: Array<{
     label: 'Secrets Manager',
     helper: 'Full AWS Secrets Manager ARN',
     placeholder: 'arn:aws:secretsmanager:region:account:secret:name',
-    color: '#DD344C',
+    color: NEUTRAL_RESOURCE_COLOR,
     icon: VpnKeyOutlinedIcon,
     isValid: (value) =>
       /^arn:aws:secretsmanager:[a-z0-9-]+:\d{12}:secret:.+$/i.test(value),
@@ -88,7 +91,7 @@ const resourceTypes: Array<{
     label: 'KMS Keys',
     helper: 'Full AWS KMS key ARN',
     placeholder: 'arn:aws:kms:region:account:key/id',
-    color: '#DD344C',
+    color: NEUTRAL_RESOURCE_COLOR,
     icon: LockOutlinedIcon,
     isValid: (value) =>
       /^arn:aws:kms:[a-z0-9-]+:\d{12}:key\/[a-f0-9-]+$/i.test(value),
@@ -98,7 +101,7 @@ const resourceTypes: Array<{
     label: 'Lambda Functions',
     helper: 'Full AWS Lambda function ARN',
     placeholder: 'arn:aws:lambda:region:account:function:name',
-    color: '#ED7100',
+    color: NEUTRAL_RESOURCE_COLOR,
     icon: FunctionsOutlinedIcon,
     isValid: (value) =>
       /^arn:aws:lambda:[a-z0-9-]+:\d{12}:function:.+$/i.test(value),
@@ -358,12 +361,14 @@ export function CreateRequestPage() {
         severity: 'success',
         message: `Request ${result.requestId} submitted successfully.`,
       });
+      // Straight to the new request's own details page instead of the
+      // My Requests list - a submitter checking on what they just filed no
+      // longer has to find it among every other request first.
       window.setTimeout(
         () =>
-          navigate(config.routes.requests, {
+          navigate(buildRequestDetailsPath(result.requestId), {
             state: {
               success: `Request ${result.requestId} submitted successfully.`,
-              requestId: result.requestId,
             },
           }),
         1200

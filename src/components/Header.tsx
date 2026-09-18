@@ -17,12 +17,15 @@ export function Header({ onMenuClick }: HeaderProps) {
       }}
     >
       <Toolbar>
+        {/* Hidden on desktop (md+): the Sidebar is permanently visible there,
+            so there is nothing to toggle. Still shown on mobile/tablet where
+            the Sidebar remains an overlay drawer. */}
         <IconButton
           color="inherit"
           aria-label="open drawer"
           edge="start"
           onClick={onMenuClick}
-          sx={{ mr: 2 }}
+          sx={{ mr: 2, display: { md: 'none' } }}
         >
           <MenuIcon />
         </IconButton>

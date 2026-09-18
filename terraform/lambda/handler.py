@@ -566,16 +566,23 @@ def notify_requester_merged(item):
         print(f"[NOTIFY] NOTIFICATION_FROM_EMAIL not configured - skipping requester notification for {request_id}")
         return
 
-    submitted_by = item.get("payload", {}).get("submitted_by", {})
+    payload = item.get("payload", {})
+    submitted_by = payload.get("submitted_by", {})
     to_email = submitted_by.get("email")
     if not to_email:
         print(f"[NOTIFY] No requester email on record for {request_id} - skipping notification")
         return
 
+    market_code = payload.get("market_code", "unknown")
+    business_justification = (payload.get("business_justification") or "").strip()
+
     subject = f"Your whitelist request {request_id} has been completed"
     body = (
         f"Good news - the pull request for your AWS whitelist request has been merged.\n\n"
         f"Request ID: {request_id}\n"
+        f"Market: {market_code}\n"
+        f"Requested by: {submitted_by.get('name', 'Unknown')} <{to_email}>\n"
+        f"Justification: {business_justification or '(none provided)'}\n"
         f"Status: COMPLETED\n"
     )
 

@@ -15,8 +15,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import ContentPasteIcon from '@mui/icons-material/ContentPaste';
 import { CreateRequestSchema, detectDuplicates, parseS3BucketNames, parseArns } from '@/utils/validation';
 import { useState } from 'react';
-
-type ResourceType = 's3Buckets' | 'secretsManager' | 'kmsKeys' | 'lambdaFunctions';
+import { ResourceType, RESOURCE_TYPE_META } from '@/constants/resourceTypes';
 
 interface ResourceSectionProps {
   resourceType: ResourceType;
@@ -25,6 +24,8 @@ interface ResourceSectionProps {
   errors: FieldErrors<CreateRequestSchema>;
 }
 
+// Labels kept as their own map (rather than reading RESOURCE_TYPE_META.label
+// everywhere) only because call sites below need the lowercased form too.
 const resourceTypeLabels: Record<ResourceType, string> = {
   s3Buckets: 'S3 Buckets',
   secretsManager: 'Secrets Manager',
@@ -50,6 +51,7 @@ export function ResourceSection({ resourceType, environmentIndex, control, error
   const [pasteText, setPasteText] = useState('');
   const [showPaste, setShowPaste] = useState(false);
   const fieldName = resourceFieldNames[resourceType];
+  const ResourceTypeIcon = RESOURCE_TYPE_META[resourceType].icon;
 
   const { fields, append, remove } = useFieldArray({
     control,
@@ -106,7 +108,10 @@ export function ResourceSection({ resourceType, environmentIndex, control, error
     return (
       <Paper sx={{ p: 3, mb: 2 }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-          <Typography variant="h6">{resourceTypeLabels[resourceType]}</Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <ResourceTypeIcon fontSize="small" sx={{ color: RESOURCE_TYPE_META[resourceType].color }} />
+            <Typography variant="h6">{resourceTypeLabels[resourceType]}</Typography>
+          </Box>
           <Box sx={{ display: 'flex', gap: 1 }}>
             <Button
               size="small"
@@ -135,7 +140,10 @@ export function ResourceSection({ resourceType, environmentIndex, control, error
   return (
     <Paper sx={{ p: 3, mb: 2 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-        <Typography variant="h6">{resourceTypeLabels[resourceType]}</Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <ResourceTypeIcon fontSize="small" sx={{ color: RESOURCE_TYPE_META[resourceType].color }} />
+          <Typography variant="h6">{resourceTypeLabels[resourceType]}</Typography>
+        </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
           <Button
             size="small"

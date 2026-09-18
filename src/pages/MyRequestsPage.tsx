@@ -25,14 +25,14 @@ import { requestService } from '@/api/services';
 import { useAuth } from '@/auth';
 import {
   WhitelistRequest,
-  RequestStatus,
   StatusGroup,
-  getStatusConfig,
+  getUserFacingStatus,
   matchesStatusGroup,
   isStatusGroup,
   STATUS_GROUP_LABELS,
+  STATUS_GROUPS,
 } from '@/types/request.types';
-import { Loader, EmptyState, ErrorState } from '@/components/common';
+import { Loader, EmptyState, ErrorState, StatusChip } from '@/components/common';
 
 export function MyRequestsPage() {
   const navigate = useNavigate();
@@ -45,7 +45,7 @@ export function MyRequestsPage() {
     []
   );
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<RequestStatus | 'ALL'>(
+  const [statusFilter, setStatusFilter] = useState<StatusGroup | 'ALL'>(
     'ALL'
   );
   // Set when arriving from a Dashboard stat card (e.g. /requests?statusGroup=pending)
@@ -93,9 +93,10 @@ export function MyRequestsPage() {
       );
     }
 
-    // Apply status filter
+    // Apply status filter (the collapsed, user-facing set - not a raw
+    // backend status)
     if (statusFilter !== 'ALL') {
-      filtered = filtered.filter((req) => req.status === statusFilter);
+      filtered = filtered.filter((req) => matchesStatusGroup(req.status, statusFilter));
     }
 
     // Apply the Dashboard-card status group, if arrived here via one
@@ -224,21 +225,16 @@ export function MyRequestsPage() {
             size="small"
             value={statusFilter}
             onChange={(e) =>
-              setStatusFilter(e.target.value as RequestStatus | 'ALL')
+              setStatusFilter(e.target.value as StatusGroup | 'ALL')
             }
             sx={{ minWidth: 200 }}
           >
             <MenuItem value="ALL">All Statuses</MenuItem>
-            <MenuItem value="QUEUED">Queued</MenuItem>
-            <MenuItem value="REQUEST_RECEIVED">Request Received</MenuItem>
-            <MenuItem value="PR_CREATED">PR Created</MenuItem>
-            <MenuItem value="PR_UPDATED">PR Updated</MenuItem>
-            <MenuItem value="PR_APPROVED">PR Approved</MenuItem>
-            <MenuItem value="PR_NEEDS_WORK">Needs Work</MenuItem>
-            <MenuItem value="PR_DECLINED">PR Declined</MenuItem>
-            <MenuItem value="PR_DELETED">PR Deleted</MenuItem>
-            <MenuItem value="SYNC_FAILED">Sync Failed (retrying)</MenuItem>
-            <MenuItem value="COMPLETED">Completed</MenuItem>
+            {STATUS_GROUPS.map((group) => (
+              <MenuItem key={group} value={group}>
+                {STATUS_GROUP_LABELS[group]}
+              </MenuItem>
+            ))}
           </TextField>
         </Box>
       </Paper>
@@ -309,11 +305,7 @@ export function MyRequestsPage() {
                       />
                     </TableCell>
                     <TableCell>
-                      <Chip
-                        label={getStatusConfig(request.status).label}
-                        color={getStatusConfig(request.status).color}
-                        size="small"
-                      />
+                      <StatusChip status={getUserFacingStatus(request.status)} />
                     </TableCell>
                     <TableCell>
                       {new Date(request.createdAt).toLocaleDateString()}

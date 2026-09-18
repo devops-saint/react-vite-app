@@ -20,3 +20,4 @@ export * from './SearchBox';
 export * from './Snackbar';
 export * from './StatusChip';
 export * from './Timeline';
+export * from './AgentRoleArn';

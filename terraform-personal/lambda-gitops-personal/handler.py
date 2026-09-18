@@ -675,7 +675,7 @@ def notify_approvers_pr_created(pr, payload):
         print(f"[NOTIFY] Failed to email approvers for {request_id}: {error}")
 
 
-def notify_approvers_promotion_created(pr, promotion_id, request_ids, to_branch):
+def notify_approvers_promotion_created(pr, promotion_id, request_ids, to_branch, dynamo_table=None):
     if not PR_APPROVER_EMAILS:
         print(f"[NOTIFY] PR_APPROVER_EMAILS not configured - skipping approver notification for {promotion_id}")
         return
@@ -685,12 +685,38 @@ def notify_approvers_promotion_created(pr, promotion_id, request_ids, to_branch)
 
     pr_url = pr.get("html_url", "")
 
+    # Per-request requester + business justification, so approvers reviewing
+    # a batched promotion PR see who asked for each item and why, not just a
+    # bare list of request ids. Best-effort: a lookup failure for one request
+    # must not block the notification for the rest.
+    request_lines = []
+    for req_id in request_ids:
+        line = req_id
+        if dynamo_table is not None:
+            try:
+                item = dynamo_table.get_item(Key={"request_id": req_id}).get("Item")
+                payload = (item or {}).get("payload", {})
+                submitted_by = payload.get("submitted_by", {})
+                justification = (payload.get("business_justification") or "").strip()
+                requester_label = submitted_by.get("name") or submitted_by.get("email") or "Unknown"
+                market_code = payload.get("market_code", "unknown")
+                line = (
+                    f"{req_id} ({market_code}) - requested by {requester_label} "
+                    f"<{submitted_by.get('email', 'unknown')}> - "
+                    f"{justification or '(no justification provided)'}"
+                )
+            except ClientError as error:
+                print(f"[NOTIFY] Failed to look up {req_id} for promotion notification: {error}")
+        request_lines.append(line)
+
     subject = f"[Action required] Review promotion to {to_branch.upper()} ({promotion_id})"
     body = (
         f"A batch of whitelist requests is ready to promote to {to_branch.upper()}.\n\n"
         f"Promotion ID: {promotion_id}\n"
-        f"Requests included: {', '.join(request_ids) or '(none recorded)'}\n"
-        f"Pull request: {pr_url or '(link unavailable)'}\n"
+        f"Pull request: {pr_url or '(link unavailable)'}\n\n"
+        f"Requests included:\n"
+        + ("\n".join(f"  - {line}" for line in request_lines) or "  (none recorded)")
+        + "\n"
     )
 
     try:
@@ -918,7 +944,7 @@ def handle_promote(event):
             except ClientError as error:
                 print(f"[HISTORY] Failed to set {pr_field} for {linked_request_id}: {error}")
 
-    notify_approvers_promotion_created(pr, promotion_id, request_ids, to_branch)
+    notify_approvers_promotion_created(pr, promotion_id, request_ids, to_branch, dynamo_table=dynamo_table)
 
     return {
         "status": "SUCCESS",

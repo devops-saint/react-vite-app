@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   Box,
   Container,
@@ -7,7 +7,6 @@ import {
   Button,
   Grid,
   Paper,
-  Chip,
   IconButton,
   Divider,
   List,
@@ -20,19 +19,34 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import DownloadIcon from '@mui/icons-material/Download';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
-import { Timeline, Loader, ErrorState } from '@/components/common';
+import { Timeline, Loader, ErrorState, StatusChip, AgentRoleArn } from '@/components/common';
 import { config } from '@/config';
 import { requestService } from '@/api/services';
 import { useAuth } from '@/auth';
-import { RequestDetails, getStatusConfig } from '@/types/request.types';
+import { RequestDetails, getUserFacingStatus, USER_FACING_STATUS_CONFIG } from '@/types/request.types';
+import { RESOURCE_TYPE_META } from '@/constants/resourceTypes';
 import { UserRole } from '@/types/auth.types';
 
 export function RequestDetailsPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, hasRole } = useAuth();
   const [request, setRequest] = useState<RequestDetails | null>(null);
   const [loading, setLoading] = useState(true);
+  // Captured once from router state on arrival (e.g. redirected here right
+  // after submitting a new request) and then cleared from history so it
+  // does not reappear on a refresh or a back/forward navigation.
+  const [justSubmittedMessage] = useState<string | null>(
+    () => (location.state as { success?: string } | null)?.success ?? null
+  );
+
+  useEffect(() => {
+    if (justSubmittedMessage) {
+      navigate(location.pathname, { replace: true, state: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const fetchRequest = async () => {
@@ -138,33 +152,84 @@ export function RequestDetailsPage() {
     );
   }
 
-  const timelineItems = request.history.map((entry) => {
-    const statusColor = getStatusConfig(entry.status).color;
-    // Map MUI chip colors to Timeline colors
-    const timelineColor:
-      | 'primary'
-      | 'secondary'
-      | 'success'
-      | 'error'
-      | 'warning'
-      | 'info'
-      | 'grey' = statusColor === 'default' ? 'grey' : statusColor;
+  // The timeline shows the same collapsed, user-facing status (Pending /
+  // In Progress / Completed) as every other badge on this page - not the
+  // raw Git/workflow status (PR_APPROVED, SYNC_FAILED, etc.) - so it never
+  // exposes backend machinery the way the old granular labels did.
+  const TIMELINE_COLOR_BY_USER_FACING_STATUS: Record<
+    ReturnType<typeof getUserFacingStatus>,
+    'grey' | 'info' | 'primary'
+  > = {
+    PENDING: 'grey',
+    IN_PROGRESS: 'info',
+    COMPLETED: 'primary',
+  };
 
-    const label = getStatusConfig(entry.status).label;
-    return {
-      id: entry.timestamp,
-      // entry.stage (DEV/QA/PRD) disambiguates which branch's PR this
-      // entry is about, since PR_APPROVED/PR_CREATED/etc. are reused
-      // across every stage.
-      title: entry.stage ? `${label} · ${entry.stage}` : label,
-      description: entry.performedBy ? `By ${entry.performedBy}` : 'System',
-      date: new Date(entry.timestamp).toLocaleString(),
+  // A request that goes through DEV then QA then PRD produces several raw
+  // history entries that all collapse to the same user-facing status (e.g.
+  // PR_CREATED/PR_APPROVED/COMPLETED on dev, then again on qa) - showing
+  // one "In Progress" timeline entry per stage read as duplicates once the
+  // label no longer says which stage it was. Consecutive entries that
+  // collapse to the same status are merged into a single timeline item
+  // instead, spanning from when that phase started to its last update, so
+  // the timeline shows at most one Pending, one In Progress and one
+  // Completed entry (never one per environment).
+  const historyGroups: { userFacingStatus: ReturnType<typeof getUserFacingStatus>; entries: typeof request.history }[] = [];
+  for (const entry of request.history) {
+    const userFacingStatus = getUserFacingStatus(entry.status);
+    const currentGroup = historyGroups[historyGroups.length - 1];
+    if (currentGroup && currentGroup.userFacingStatus === userFacingStatus) {
+      currentGroup.entries.push(entry);
+    } else {
+      historyGroups.push({ userFacingStatus, entries: [entry] });
+    }
+  }
+
+  const timelineItems: {
+    id: string;
+    title: string;
+    description: string;
+    date: string;
+    color: 'grey' | 'info' | 'primary';
+  }[] = [];
+  historyGroups.forEach((group, index) => {
+    const { userFacingStatus, entries } = group;
+    const firstEntry = entries[0];
+    const lastEntry = entries[entries.length - 1];
+    // historyGroups only ever pushes groups with at least one entry (see
+    // the loop above), so this is unreachable - the guard is here purely
+    // so TS can narrow entries[0]/entries[entries.length - 1] past
+    // 'possibly undefined' without a non-null assertion.
+    if (!firstEntry || !lastEntry) return;
+
+    const label = USER_FACING_STATUS_CONFIG[userFacingStatus].label;
+    const timelineColor = TIMELINE_COLOR_BY_USER_FACING_STATUS[userFacingStatus];
+    const performedBy = lastEntry.performedBy || 'System';
+
+    timelineItems.push({
+      id: `${userFacingStatus}-${index}-${firstEntry.timestamp}`,
+      title: label,
+      // Deliberately no per-environment (DEV/QA/PRD) breakdown here - a
+      // single 'In Progress' group can span all three as the request is
+      // promoted automatically, and surfacing just the stage(s) reached
+      // so far reads as more complete/final than it is, which confused
+      // users into thinking the request had stalled on one environment.
+      description: `By ${performedBy}`,
+      date:
+        firstEntry.timestamp === lastEntry.timestamp
+          ? new Date(firstEntry.timestamp).toLocaleString()
+          : `${new Date(firstEntry.timestamp).toLocaleString()} – ${new Date(lastEntry.timestamp).toLocaleString()}`,
       color: timelineColor,
-    };
+    });
   });
 
   return (
     <Container maxWidth="xl" sx={{ py: 4 }}>
+      {justSubmittedMessage && (
+        <Alert severity="success" sx={{ mb: 3 }}>
+          {justSubmittedMessage}
+        </Alert>
+      )}
       {/* Header */}
       <Box
         sx={{
@@ -227,10 +292,7 @@ export function RequestDetailsPage() {
                   Status
                 </Typography>
                 <Box>
-                  <Chip
-                    label={getStatusConfig(request.status).label}
-                    color={getStatusConfig(request.status).color}
-                  />
+                  <StatusChip status={getUserFacingStatus(request.status)} />
                 </Box>
               </Grid>
               <Grid item xs={6}>
@@ -264,19 +326,31 @@ export function RequestDetailsPage() {
               Requested Resources
             </Typography>
             <Divider sx={{ mb: 2 }} />
-            {request.environments.map((env, idx) => (
+            {(() => {
+              const S3Icon = RESOURCE_TYPE_META.s3Buckets.icon;
+              const SecretsIcon = RESOURCE_TYPE_META.secretsManager.icon;
+              const KmsIcon = RESOURCE_TYPE_META.kmsKeys.icon;
+              const LambdaIcon = RESOURCE_TYPE_META.lambdaFunctions.icon;
+              return request.environments.map((env, idx) => (
               <Box key={idx} sx={{ mb: 3 }}>
                 <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
                   {env.environment} Environment
                 </Typography>
+                <AgentRoleArn environment={env.environment} marketCode={request.marketCode} />
                 <Box sx={{ pl: 2 }}>
                   {env.resources.s3Buckets.length > 0 && (
                     <Box sx={{ mb: 2 }}>
                       <Typography
                         variant="subtitle2"
-                        color="primary"
                         gutterBottom
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 0.75,
+                          color: RESOURCE_TYPE_META.s3Buckets.color,
+                        }}
                       >
+                        <S3Icon fontSize="small" />
                         S3 Buckets ({env.resources.s3Buckets.length})
                       </Typography>
                       <List dense>
@@ -298,9 +372,15 @@ export function RequestDetailsPage() {
                     <Box sx={{ mb: 2 }}>
                       <Typography
                         variant="subtitle2"
-                        color="primary"
                         gutterBottom
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 0.75,
+                          color: RESOURCE_TYPE_META.secretsManager.color,
+                        }}
                       >
+                        <SecretsIcon fontSize="small" />
                         Secrets Manager ({env.resources.secretsManager.length})
                       </Typography>
                       <List dense>
@@ -328,9 +408,15 @@ export function RequestDetailsPage() {
                     <Box sx={{ mb: 2 }}>
                       <Typography
                         variant="subtitle2"
-                        color="primary"
                         gutterBottom
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 0.75,
+                          color: RESOURCE_TYPE_META.kmsKeys.color,
+                        }}
                       >
+                        <KmsIcon fontSize="small" />
                         KMS Keys ({env.resources.kmsKeys.length})
                       </Typography>
                       <List dense>
@@ -358,9 +444,15 @@ export function RequestDetailsPage() {
                     <Box sx={{ mb: 2 }}>
                       <Typography
                         variant="subtitle2"
-                        color="primary"
                         gutterBottom
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 0.75,
+                          color: RESOURCE_TYPE_META.lambdaFunctions.color,
+                        }}
                       >
+                        <LambdaIcon fontSize="small" />
                         Lambda Functions ({env.resources.lambdaFunctions.length}
                         )
                       </Typography>
@@ -387,7 +479,8 @@ export function RequestDetailsPage() {
                   )}
                 </Box>
               </Box>
-            ))}
+              ));
+            })()}
           </Paper>
 
           {/* Submitted By */}

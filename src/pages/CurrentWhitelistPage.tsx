@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   Container,
   Typography,
@@ -12,79 +12,81 @@ import {
   Chip,
   Alert,
   Tooltip,
+  Tabs,
+  Tab,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import Inventory2Icon from '@mui/icons-material/Inventory2';
-import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
-import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
-import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
-import FunctionsOutlinedIcon from '@mui/icons-material/FunctionsOutlined';
-import { Loader, ErrorState } from '@/components/common';
+import { Loader, ErrorState, AgentRoleArn } from '@/components/common';
 import { config } from '@/config';
 import { requestService } from '@/api/services';
 import { CurrentWhitelist } from '@/types/request.types';
+import { RESOURCE_TYPES, RESOURCE_TYPE_META } from '@/constants/resourceTypes';
 
 const ENVIRONMENTS = ['DEV', 'QA', 'PRD'] as const;
+type EnvName = (typeof ENVIRONMENTS)[number];
 
-// Colors match AWS's own Architecture Icons category palette, not a
-// decorative choice - Storage (S3) is AWS's "Endor" green, Security,
-// Identity & Compliance (Secrets Manager + KMS - the same category in
-// AWS's own icon set, hence the same color) is "Mars" red, and Compute
-// (Lambda) is "Smile" orange.
-const SECTIONS: {
-  key: keyof Pick<CurrentWhitelist, 'buckets' | 'secrets' | 'kmsKeys' | 'functions'>;
-  label: string;
-  color: string;
-  icon: typeof StorageOutlinedIcon;
-}[] = [
-  { key: 'buckets', label: 'S3 Buckets', color: '#7AA116', icon: StorageOutlinedIcon },
-  { key: 'secrets', label: 'Secrets Manager', color: '#DD344C', icon: VpnKeyOutlinedIcon },
-  { key: 'kmsKeys', label: 'KMS Keys', color: '#DD344C', icon: LockOutlinedIcon },
-  { key: 'functions', label: 'Lambda Functions', color: '#ED7100', icon: FunctionsOutlinedIcon },
-];
+type EnvState = {
+  loading: boolean;
+  error: string | null;
+  data: CurrentWhitelist | null;
+};
+
+const EMPTY_ENV_STATE: EnvState = { loading: false, error: null, data: null };
 
 export function CurrentWhitelistPage() {
-  // Neither starts pre-selected - showing a default market/DEV on load
-  // reads as "here's DEV's whitelist" before the viewer has chosen
-  // anything, which is misleading when they meant a different market.
-  // Require an explicit choice for both instead.
+  // Market still requires an explicit choice - showing a default market on
+  // load would read as "here's this market's whitelist" before the viewer
+  // has chosen anything. Environment no longer needs a dropdown: once a
+  // market is picked, all three environments load together (see fetchAll
+  // below), so the Tabs below just switch which already-loaded environment
+  // is shown - no re-fetch, no repeated selection.
   const [marketCode, setMarketCode] = useState('');
-  const [environment, setEnvironment] = useState<'' | (typeof ENVIRONMENTS)[number]>('');
-  const [whitelist, setWhitelist] = useState<CurrentWhitelist | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [envState, setEnvState] = useState<Record<EnvName, EnvState>>({
+    DEV: EMPTY_ENV_STATE,
+    QA: EMPTY_ENV_STATE,
+    PRD: EMPTY_ENV_STATE,
+  });
+  const [activeTab, setActiveTab] = useState<EnvName>('DEV');
 
-  const fetchWhitelist = async () => {
-    if (!marketCode || !environment) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await requestService.getCurrentWhitelist(marketCode, environment);
-      setWhitelist(data);
-    } catch (err) {
-      console.error('[CurrentWhitelistPage] Failed to fetch whitelist:', err);
-      setError(
-        err instanceof Error ? err.message : 'Failed to fetch the current whitelist'
-      );
-      setWhitelist(null);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const fetchAll = useCallback(async () => {
+    if (!marketCode) return;
+    setEnvState({
+      DEV: { loading: true, error: null, data: null },
+      QA: { loading: true, error: null, data: null },
+      PRD: { loading: true, error: null, data: null },
+    });
+    await Promise.all(
+      ENVIRONMENTS.map(async (env) => {
+        try {
+          const data = await requestService.getCurrentWhitelist(marketCode, env);
+          setEnvState((prev) => ({ ...prev, [env]: { loading: false, error: null, data } }));
+        } catch (err) {
+          console.error(`[CurrentWhitelistPage] Failed to fetch ${env} whitelist:`, err);
+          setEnvState((prev) => ({
+            ...prev,
+            [env]: {
+              loading: false,
+              error: err instanceof Error ? err.message : 'Failed to fetch the current whitelist',
+              data: null,
+            },
+          }));
+        }
+      })
+    );
+  }, [marketCode]);
 
-  // Auto-loads once both a market and an environment are selected (the
-  // fetchWhitelist guard above is a no-op until then) - no separate
-  // "Search" button needed, but also nothing fetched on the viewer's
-  // behalf before they've actually picked something.
+  // Fires once a market is picked, and again if the viewer picks a
+  // different one - not on tab changes, since every environment's data is
+  // already loaded by then.
   useEffect(() => {
-    void fetchWhitelist();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [marketCode, environment]);
+    void fetchAll();
+  }, [fetchAll]);
 
-  const readyToShow = Boolean(marketCode && environment);
-
+  const readyToShow = Boolean(marketCode);
   const market = config.markets.find((item) => item.code === marketCode);
+  const anyLoading = ENVIRONMENTS.some((env) => envState[env].loading);
 
   return (
     <Container maxWidth="lg" sx={{ py: 4 }}>
@@ -95,15 +97,16 @@ export function CurrentWhitelistPage() {
         </Typography>
       </Box>
       <Typography variant="body1" color="text.secondary" sx={{ mb: 4 }}>
-        What's already whitelisted for a market and environment, read live from the
-        source-controlled config repo - not from requests submitted through this portal.
+        What&apos;s already whitelisted for a market, read live from the source-controlled config
+        repo - not from requests submitted through this portal. All three environments load
+        together as soon as you pick a market, so switching tabs below is instant.
       </Typography>
 
       <Paper sx={{ p: 3, mb: 3 }}>
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: { xs: '1fr', sm: 'minmax(220px, 0.5fr) minmax(160px, 0.3fr) auto' },
+            gridTemplateColumns: { xs: '1fr', sm: 'minmax(220px, 0.5fr) auto' },
             gap: 2,
             alignItems: 'center',
           }}
@@ -125,28 +128,9 @@ export function CurrentWhitelistPage() {
               </MenuItem>
             ))}
           </TextField>
-          <TextField
-            select
-            label="Environment"
-            value={environment}
-            SelectProps={{ displayEmpty: true }}
-            InputLabelProps={{ shrink: true }}
-            onChange={(event) =>
-              setEnvironment(event.target.value as '' | (typeof ENVIRONMENTS)[number])
-            }
-          >
-            <MenuItem value="">
-              <em>Select environment</em>
-            </MenuItem>
-            {ENVIRONMENTS.map((env) => (
-              <MenuItem key={env} value={env}>
-                {env}
-              </MenuItem>
-            ))}
-          </TextField>
           <Tooltip title="Refresh">
             <span>
-              <IconButton onClick={() => void fetchWhitelist()} disabled={loading}>
+              <IconButton onClick={() => void fetchAll()} disabled={!readyToShow || anyLoading}>
                 <RefreshIcon />
               </IconButton>
             </span>
@@ -154,122 +138,153 @@ export function CurrentWhitelistPage() {
         </Box>
       </Paper>
 
-      {!readyToShow && !loading && (
-        <Alert severity="info">
-          Select a market and an environment above to see the current whitelist.
-        </Alert>
+      {!readyToShow && (
+        <Alert severity="info">Select a market above to see its current whitelist.</Alert>
       )}
 
-      {loading && <Loader message="Reading current whitelist..." />}
-
-      {!loading && error && (
-        <ErrorState
-          title="Couldn't load the current whitelist"
-          message={error}
-          onRetry={() => void fetchWhitelist()}
-        />
-      )}
-
-      {!loading && !error && whitelist && (
+      {readyToShow && (
         <>
-          {!whitelist.exists ? (
-            <Alert severity="info">
-              Nothing has been whitelisted for {(market?.code || whitelist.marketCode).toUpperCase()} in{' '}
-              {whitelist.environment} yet - this environment's config file doesn't exist in the
-              repo yet.
-            </Alert>
-          ) : (
-            <Grid container spacing={2}>
-              {SECTIONS.map((section) => {
-                const items = whitelist[section.key];
-                const Icon = section.icon;
-                return (
-                  <Grid item xs={12} sm={6} key={section.key}>
-                    <Paper
-                      sx={{
-                        p: 3,
-                        height: '100%',
-                        borderTop: `3px solid ${section.color}`,
-                      }}
-                    >
-                      <Box
-                        sx={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          mb: 1,
-                        }}
-                      >
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                          <Box
-                            sx={{
-                              color: section.color,
-                              display: 'grid',
-                              placeItems: 'center',
-                            }}
-                          >
-                            <Icon fontSize="small" />
-                          </Box>
-                          <Typography variant="h6" fontWeight="bold">
-                            {section.label}
-                          </Typography>
-                        </Box>
-                        <Chip
-                          size="small"
-                          label={items.length}
-                          sx={{
-                            bgcolor: alpha(section.color, 0.12),
-                            color: section.color,
-                            fontWeight: 700,
-                          }}
-                        />
-                      </Box>
-                      <Divider sx={{ mb: 2 }} />
-                      {items.length === 0 ? (
-                        <Typography variant="body2" color="text.secondary">
-                          None whitelisted in this environment yet.
-                        </Typography>
-                      ) : (
-                        // Full rows instead of Chips - a Chip's label is
-                        // built to truncate long text with an ellipsis,
-                        // which was cutting real ARNs off mid-string.
-                        // These wrap instead, so the whole value is
-                        // always visible.
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                          {items.map((value) => (
-                            <Box
-                              key={value}
-                              sx={{
-                                px: 1.5,
-                                py: 0.75,
-                                borderRadius: 1,
-                                bgcolor: alpha(section.color, 0.06),
-                                border: '1px solid',
-                                borderColor: alpha(section.color, 0.25),
-                              }}
-                            >
-                              <Typography
-                                variant="body2"
-                                sx={{
-                                  fontFamily: 'monospace',
-                                  wordBreak: 'break-all',
-                                  lineHeight: 1.5,
-                                }}
-                              >
-                                {value}
-                              </Typography>
-                            </Box>
-                          ))}
-                        </Box>
-                      )}
-                    </Paper>
-                  </Grid>
-                );
-              })}
-            </Grid>
-          )}
+          <Tabs
+            value={activeTab}
+            onChange={(_e, value: EnvName) => setActiveTab(value)}
+            sx={{ mb: 2 }}
+          >
+            {ENVIRONMENTS.map((env) => (
+              <Tab key={env} value={env} label={env} />
+            ))}
+          </Tabs>
+
+          <EnvironmentSection
+            env={activeTab}
+            market={market}
+            marketCode={marketCode}
+            state={envState[activeTab]}
+          />
         </>
       )}
     </Container>
+  );
+}
+
+function EnvironmentSection({
+  env,
+  market,
+  marketCode,
+  state,
+}: {
+  env: EnvName;
+  market: { code: string; name: string } | undefined;
+  marketCode: string;
+  state: EnvState;
+}) {
+  return (
+    <Box sx={{ mb: 4 }}>
+      <Typography variant="subtitle1" fontWeight="bold" sx={{ mb: 1.5 }}>
+        {env}
+      </Typography>
+
+      <AgentRoleArn environment={env} marketCode={marketCode} />
+
+      {state.loading && <Loader message={`Reading ${env} whitelist...`} />}
+
+      {!state.loading && state.error && (
+        <ErrorState title={`Couldn't load ${env}`} message={state.error} />
+      )}
+
+      {!state.loading && !state.error && state.data && !state.data.exists && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          Nothing has been whitelisted for {(market?.code || marketCode).toUpperCase()} in {env}{' '}
+          yet - this environment&apos;s config file doesn&apos;t exist in the repo yet.
+        </Alert>
+      )}
+
+      {!state.loading && !state.error && state.data && state.data.exists && (() => {
+        const whitelist = state.data;
+        return (
+        <Grid container spacing={2} sx={{ mb: 2 }}>
+          {RESOURCE_TYPES.map((resourceType) => {
+            const key = resourceType === 's3Buckets' ? 'buckets'
+              : resourceType === 'secretsManager' ? 'secrets'
+              : resourceType === 'kmsKeys' ? 'kmsKeys'
+              : 'functions';
+            const items = whitelist[key];
+            const meta = RESOURCE_TYPE_META[resourceType];
+            const Icon = meta.icon;
+            return (
+              <Grid item xs={12} sm={6} key={resourceType}>
+                <Paper
+                  sx={{
+                    p: 3,
+                    height: '100%',
+                    borderTop: `3px solid ${meta.color}`,
+                  }}
+                >
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      mb: 1,
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Box sx={{ color: meta.color, display: 'grid', placeItems: 'center' }}>
+                        <Icon fontSize="small" />
+                      </Box>
+                      <Typography variant="h6" fontWeight="bold">
+                        {meta.label}
+                      </Typography>
+                    </Box>
+                    <Chip
+                      size="small"
+                      label={items.length}
+                      sx={{
+                        bgcolor: alpha(meta.color, 0.12),
+                        color: meta.color,
+                        fontWeight: 700,
+                      }}
+                    />
+                  </Box>
+                  <Divider sx={{ mb: 2 }} />
+                  {items.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary">
+                      None whitelisted in this environment yet.
+                    </Typography>
+                  ) : (
+                    // Full rows instead of Chips - a Chip's label is built to
+                    // truncate long text with an ellipsis, which was cutting
+                    // real ARNs off mid-string. These wrap instead, so the
+                    // whole value is always visible.
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                      {items.map((value) => (
+                        <Box
+                          key={value}
+                          sx={{
+                            px: 1.5,
+                            py: 0.75,
+                            borderRadius: 1,
+                            bgcolor: alpha(meta.color, 0.06),
+                            border: '1px solid',
+                            borderColor: alpha(meta.color, 0.25),
+                          }}
+                        >
+                          <Typography
+                            variant="body2"
+                            sx={{ fontFamily: 'monospace', wordBreak: 'break-all', lineHeight: 1.5 }}
+                          >
+                            {value}
+                          </Typography>
+                        </Box>
+                      ))}
+                    </Box>
+                  )}
+                </Paper>
+              </Grid>
+            );
+          })}
+        </Grid>
+        );
+      })()}
+    </Box>
   );
 }

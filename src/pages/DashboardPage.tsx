@@ -16,13 +16,11 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Chip,
   Stack,
   Button,
 } from '@mui/material';
 import PendingIcon from '@mui/icons-material/Pending';
-import CheckCircleIcon from '@mui/icons-material/CheckCircle';
-import CancelIcon from '@mui/icons-material/Cancel';
+import AutorenewIcon from '@mui/icons-material/Autorenew';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import AddIcon from '@mui/icons-material/Add';
 import AssignmentIcon from '@mui/icons-material/Assignment';
@@ -30,8 +28,8 @@ import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import Inventory2Icon from '@mui/icons-material/Inventory2';
 import { useAuth } from '@/auth';
 import { requestService } from '@/api/services';
-import { WhitelistRequest, getStatusConfig, StatusGroup } from '@/types/request.types';
-import { Loader } from '@/components/common';
+import { WhitelistRequest, getUserFacingStatus, StatusGroup } from '@/types/request.types';
+import { Loader, StatusChip } from '@/components/common';
 
 export function DashboardPage() {
   const { user } = useAuth();
@@ -39,8 +37,7 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({
     pending: 0,
-    approved: 0,
-    rejected: 0,
+    inProgress: 0,
     completed: 0,
   });
   const [recentRequests, setRecentRequests] = useState<WhitelistRequest[]>([]);
@@ -138,9 +135,14 @@ export function DashboardPage() {
         </Stack>
       </Box>
 
-      {/* Summary Cards */}
+      {/* Summary Cards - the three collapsed user-facing statuses (see
+          getUserFacingStatus in request.types.ts). A declined/deleted PR or
+          a rejected request lands under Completed too - the lifecycle has
+          ended and the requester is already notified by email - so there
+          is no separate "failed" bucket. Icon colors intentionally stay off
+          the success(green)/error(red) axis. */}
       <Grid container spacing={3} sx={{ mb: 4 }}>
-        <Grid item xs={12} sm={6} md={3}>
+        <Grid item xs={12} sm={6} md={4}>
           <Card>
           <CardActionArea onClick={() => handleStatCardClick('pending')}>
             <CardContent>
@@ -157,14 +159,14 @@ export function DashboardPage() {
                     color="text.secondary"
                     gutterBottom
                   >
-                    Pending Requests
+                    Pending
                   </Typography>
                   <Typography variant="h4" fontWeight="bold">
                     {stats.pending}
                   </Typography>
                 </Box>
                 <PendingIcon
-                  sx={{ fontSize: 48, color: 'warning.main', opacity: 0.3 }}
+                  sx={{ fontSize: 48, color: 'text.disabled', opacity: 0.6 }}
                 />
               </Box>
             </CardContent>
@@ -172,9 +174,9 @@ export function DashboardPage() {
         </Card>
         </Grid>
 
-        <Grid item xs={12} sm={6} md={3}>
+        <Grid item xs={12} sm={6} md={4}>
           <Card>
-          <CardActionArea onClick={() => handleStatCardClick('approved')}>
+          <CardActionArea onClick={() => handleStatCardClick('in_progress')}>
             <CardContent>
               <Box
                 sx={{
@@ -189,14 +191,14 @@ export function DashboardPage() {
                     color="text.secondary"
                     gutterBottom
                   >
-                    Approved Requests
+                    In Progress
                   </Typography>
                   <Typography variant="h4" fontWeight="bold">
-                    {stats.approved}
+                    {stats.inProgress}
                   </Typography>
                 </Box>
-                <CheckCircleIcon
-                  sx={{ fontSize: 48, color: 'primary.main', opacity: 0.3 }}
+                <AutorenewIcon
+                  sx={{ fontSize: 48, color: 'info.main', opacity: 0.3 }}
                 />
               </Box>
             </CardContent>
@@ -204,39 +206,7 @@ export function DashboardPage() {
         </Card>
         </Grid>
 
-        <Grid item xs={12} sm={6} md={3}>
-          <Card>
-          <CardActionArea onClick={() => handleStatCardClick('rejected')}>
-            <CardContent>
-              <Box
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                }}
-              >
-                <Box>
-                  <Typography
-                    variant="body2"
-                    color="text.secondary"
-                    gutterBottom
-                  >
-                    Rejected Requests
-                  </Typography>
-                  <Typography variant="h4" fontWeight="bold">
-                    {stats.rejected}
-                  </Typography>
-                </Box>
-                <CancelIcon
-                  sx={{ fontSize: 48, color: 'error.main', opacity: 0.3 }}
-                />
-              </Box>
-            </CardContent>
-          </CardActionArea>
-        </Card>
-        </Grid>
-
-        <Grid item xs={12} sm={6} md={3}>
+        <Grid item xs={12} sm={6} md={4}>
           <Card>
           <CardActionArea onClick={() => handleStatCardClick('completed')}>
             <CardContent>
@@ -253,14 +223,14 @@ export function DashboardPage() {
                     color="text.secondary"
                     gutterBottom
                   >
-                    Completed Requests
+                    Completed
                   </Typography>
                   <Typography variant="h4" fontWeight="bold">
                     {stats.completed}
                   </Typography>
                 </Box>
                 <TaskAltIcon
-                  sx={{ fontSize: 48, color: 'success.main', opacity: 0.3 }}
+                  sx={{ fontSize: 48, color: 'primary.main', opacity: 0.3 }}
                 />
               </Box>
             </CardContent>
@@ -312,11 +282,7 @@ export function DashboardPage() {
                       {request.marketCode.toUpperCase()} - {request.marketName}
                     </TableCell>
                     <TableCell>
-                      <Chip
-                        label={getStatusConfig(request.status).label}
-                        color={getStatusConfig(request.status).color}
-                        size="small"
-                      />
+                      <StatusChip status={getUserFacingStatus(request.status)} />
                     </TableCell>
                     <TableCell>
                       {new Date(request.createdAt).toLocaleDateString()}

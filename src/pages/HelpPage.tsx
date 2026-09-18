@@ -88,124 +88,46 @@ export function HelpPage() {
         </List>
       </Paper>
 
-      {/* Request Lifecycle Section */}
+      {/* Request Lifecycle / Status Section */}
       <Paper sx={{ p: 3, mb: 3 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
           <TimelineIcon color="primary" />
           <Typography variant="h6" fontWeight="bold">
-            Request Lifecycle
+            Request Status
           </Typography>
         </Box>
         <Divider sx={{ mb: 2 }} />
         <Typography variant="body1" paragraph>
-          After you submit a request, it moves through the following
-          automated workflow. A request that only targets DEV completes
-          after one merge; a request that also targets QA and/or PRD is
-          promoted automatically, one environment at a time.
+          Every request shows one of three statuses, no matter how many
+          environments it targets or what&apos;s happening behind the
+          scenes:
         </Typography>
         <List>
           <ListItem>
             <ListItemText
-              primary="Request received"
-              secondary="Your request has been received and queued for processing"
+              primary="Pending"
+              secondary="Received and queued - processing hasn't started yet"
             />
           </ListItem>
           <ListItem>
             <ListItemText
-              primary="Pull request opened"
-              secondary="A branch and pull request have been created in Bitbucket for the DEV environment"
-            />
-          </ListItem>
-          <ListItem>
-            <ListItemText
-              primary="Pull request reviewed"
-              secondary="Approvers review the pull request in Bitbucket; it may be approved, sent back for changes, or declined"
-            />
-          </ListItem>
-          <ListItem>
-            <ListItemText
-              primary="Merged and promoted"
-              secondary="Once merged, the change is automatically opened as a new pull request against the next environment (DEV → QA → PRD) and the cycle repeats"
+              primary="In Progress"
+              secondary="Actively being processed. For a request targeting more than one environment, this covers the whole run - DEV, then QA, then PRD are handled automatically, one after another, with no extra action needed from you"
             />
           </ListItem>
           <ListItem>
             <ListItemText
               primary="Completed"
-              secondary="The pull request into your final target environment has merged and the resources are whitelisted"
+              secondary="The request has reached its final outcome and nothing further will happen automatically. This also covers a request that was declined or removed during review - either way, you're notified by email with the outcome"
             />
           </ListItem>
         </List>
         <Alert severity="info" sx={{ mt: 2 }}>
-          <strong>Note:</strong> There&apos;s no separate manual approval step
-          in the portal itself &mdash; approval happens on the pull request in
-          Bitbucket. If a sync step fails (for example, a transient Bitbucket
-          error), the portal automatically retries it on a schedule, so a
-          request can briefly show as failed before recovering on its own.
+          <strong>Note:</strong> A request can occasionally take longer than
+          usual to move out of In Progress - it&apos;s still being retried
+          automatically in the background and needs no action from you. If
+          it stays In Progress for more than a day, contact support below.
         </Alert>
-      </Paper>
-
-      {/* Status Definitions Section */}
-      <Paper sx={{ p: 3, mb: 3 }}>
-        <Typography variant="h6" fontWeight="bold" gutterBottom>
-          Status Definitions
-        </Typography>
-        <Divider sx={{ mb: 2 }} />
-        <List>
-          <ListItem>
-            <ListItemText
-              primary="REQUEST_RECEIVED"
-              secondary="Initial status when a request is created"
-            />
-          </ListItem>
-          <ListItem>
-            <ListItemText
-              primary="PR_CREATED"
-              secondary="A pull request has been opened in Bitbucket for the current environment"
-            />
-          </ListItem>
-          <ListItem>
-            <ListItemText
-              primary="PR_UPDATED"
-              secondary="The open pull request received a new commit or update"
-            />
-          </ListItem>
-          <ListItem>
-            <ListItemText
-              primary="PR_APPROVED"
-              secondary="An approver has approved the pull request"
-            />
-          </ListItem>
-          <ListItem>
-            <ListItemText
-              primary="PR_NEEDS_WORK"
-              secondary="A reviewer requested changes before the pull request can be merged"
-            />
-          </ListItem>
-          <ListItem>
-            <ListItemText
-              primary="PR_DECLINED / PR_DELETED"
-              secondary="The pull request was closed without merging or was removed &mdash; the request will not progress further; contact support if this wasn't expected"
-            />
-          </ListItem>
-          <ListItem>
-            <ListItemText
-              primary="{ENV}_MERGED_AWAITING_{NEXT_ENV}"
-              secondary="For example DEV_MERGED_AWAITING_QA: the pull request for that environment merged, and the automatic promotion pull request into the next environment is being opened"
-            />
-          </ListItem>
-          <ListItem>
-            <ListItemText
-              primary="COMPLETED"
-              secondary="The pull request into your final target environment has merged &mdash; resources are whitelisted"
-            />
-          </ListItem>
-          <ListItem>
-            <ListItemText
-              primary="SYNC_FAILED"
-              secondary="An automated step (branch, PR, or promotion) hit an error. The portal retries this automatically on a schedule; it usually clears on its own within a few retry cycles"
-            />
-          </ListItem>
-        </List>
       </Paper>
 
       {/* Support Section */}

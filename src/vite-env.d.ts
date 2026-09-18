@@ -28,6 +28,12 @@ interface ImportMetaEnv {
   readonly VITE_AVAILABLE_MARKETS: string;
   readonly VITE_REPOSITORY_NAME: string;
   readonly VITE_AWS_REGION: string;
+  readonly VITE_AWS_ACCOUNT_ID_DEV: string;
+  readonly VITE_AWS_ACCOUNT_ID_QA: string;
+  readonly VITE_AWS_ACCOUNT_ID_PRD: string;
+  readonly VITE_SHOW_INTEGRATION_DISCLAIMER: string;
+  readonly VITE_INTEGRATION_DISCLAIMER_TEXT: string;
+  readonly VITE_DOCUMENTATION_LINKS: string;
 }
 
 interface ImportMeta {

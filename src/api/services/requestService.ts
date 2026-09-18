@@ -308,17 +308,19 @@ export const requestService = {
         'requests'
       );
 
-      // Status categories reflect the real backend lifecycle (see
-      // lambda/handler.py WEBHOOK_STATUS_MAP + handle_stage_event), not
-      // the older SUBMITTED/BRANCH_CREATED/MERGED-style placeholder
-      // statuses this used to check for, which the backend never sends.
+      // Status categories are the small, user-facing set (Pending / In
+      // Progress / Completed) collapsed from the real backend lifecycle
+      // (see lambda/handler.py WEBHOOK_STATUS_MAP + handle_stage_event) by
+      // getUserFacingStatus - not raw Git/workflow statuses like
+      // PR_APPROVED or SYNC_FAILED. A declined/deleted/rejected request
+      // counts as Completed (its lifecycle has ended and the requester is
+      // already notified by email), not a separate failed bucket.
       // Bucketing lives in matchesStatusGroup (request.types.ts) - shared
       // with MyRequestsPage's statusGroup filter so a Dashboard card's
       // count and what clicking it filters down to can never drift apart.
       const stats = {
         pending: requests.filter((r) => matchesStatusGroup(r.status, 'pending')).length,
-        approved: requests.filter((r) => matchesStatusGroup(r.status, 'approved')).length,
-        rejected: requests.filter((r) => matchesStatusGroup(r.status, 'rejected')).length,
+        inProgress: requests.filter((r) => matchesStatusGroup(r.status, 'in_progress')).length,
         completed: requests.filter((r) => matchesStatusGroup(r.status, 'completed')).length,
       };
 
