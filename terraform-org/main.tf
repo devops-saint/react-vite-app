@@ -518,6 +518,12 @@ resource "aws_apigatewayv2_route" "retry_promotion" {
   target    = "integrations/${aws_apigatewayv2_integration.main.id}"
 }
 
+resource "aws_apigatewayv2_route" "cancel_request" {
+  api_id    = aws_apigatewayv2_api.portal.id
+  route_key = "POST /requests/{request_id}/cancel"
+  target    = "integrations/${aws_apigatewayv2_integration.main.id}"
+}
+
 resource "aws_apigatewayv2_route" "get_whitelist" {
   api_id    = aws_apigatewayv2_api.portal.id
   route_key = "GET /whitelist/{market_code}/{environment}"

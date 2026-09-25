@@ -17,6 +17,8 @@ export type RequestStatus =
   | 'PR_DECLINED'
   | 'PR_DELETED'
   | 'SYNC_FAILED' // an automated gitops step failed; auto-retried on a schedule
+  | 'CANCELLED' // requester cancelled before the request merged to dev - see /cancel in lambda/handler.py
+  | 'PENDING_AWS_VERIFICATION' // git side is done (final-stage PR merged); waiting on handle_validation_sweep to confirm the change is actually live in AWS before COMPLETED - see lambda/handler.py
   | 'UNKNOWN';
 
 // Environment Types
@@ -81,6 +83,19 @@ export interface WhitelistRequest {
   status: RequestStatus;
   createdAt: string;
   updatedAt: string;
+  // From stage_summary() in lambda/handler.py - present on both the list
+  // endpoint (/dpc/listrequests) and the single-request endpoint, so an
+  // admin-only PR-link affordance can render from either the My Requests
+  // list or the Request Details page. Human-viewable Bitbucket PR link
+  // per stage; null where a PR id isn't on record yet, or the backend
+  // has no Bitbucket URL configured.
+  prUrls?: Record<string, string | null>;
+  // 'DEWHITELIST' for a request submitted from Current Whitelist's remove
+  // (X) action - rides through the identical branch/PR/review/promotion
+  // pipeline as an ordinary whitelist request, just removing instead of
+  // adding the listed resource(s). Undefined/omitted is treated the same
+  // as 'WHITELIST' everywhere this is read.
+  requestType?: 'WHITELIST' | 'DEWHITELIST';
 }
 
 // Create Request Form Data
@@ -118,18 +133,25 @@ export interface RequestDetails extends WhitelistRequest {
   // From stage_summary() in lambda/handler.py - optional because the
   // list-lookup fallback path in requestService.ts (getRequestById)
   // doesn't reconstruct these. Keyed by environment (DEV/QA/PRD).
+  // (prUrls itself now lives on WhitelistRequest - see above - since the
+  // list endpoint returns it too.)
   targetEnvironment?: string;
   currentStage?: string;
   prs?: Record<string, string | number | null>;
-  // Human-viewable Bitbucket PR links per stage - admin-only "view PR"
-  // link on the request-details page. Null where a PR id isn't on
-  // record yet, or the backend has no Bitbucket URL configured.
-  prUrls?: Record<string, string | null>;
   // Only set when status is QUEUED - the request_id currently holding
   // this market's lock, so the UI can explain what this one is waiting
   // on. Undefined if nothing was queued ahead of it, or the lock lookup
   // came back empty.
   blockedBy?: string | null;
+  // Set once handle_validation_sweep has made at least one pass over
+  // this request (status PENDING_AWS_VERIFICATION) - see the AWS-SIDE
+  // ACCESS VERIFICATION block in lambda/handler.py. lastVerificationDetail
+  // is a JSON string of {ENV: true|false|null} (null = skipped, no
+  // validation role configured for that env), shown as-is rather than
+  // parsed since it's purely diagnostic.
+  verificationAttempts?: number;
+  lastVerificationAttemptAt?: string | null;
+  lastVerificationDetail?: string | null;
 }
 
 // Dashboard Statistics
@@ -194,6 +216,8 @@ export const STATUS_CONFIG: Record<
   PR_DECLINED: { label: 'PR Declined', color: 'error' },
   PR_DELETED: { label: 'PR Deleted', color: 'default' },
   SYNC_FAILED: { label: 'Sync Failed (retrying)', color: 'error' },
+  CANCELLED: { label: 'Cancelled', color: 'default' },
+  PENDING_AWS_VERIFICATION: { label: 'Verifying in AWS', color: 'warning' },
   UNKNOWN: { label: 'Unknown', color: 'default' },
 };
 
@@ -262,10 +286,43 @@ export const getUserFacingStatus = (status: string): UserFacingStatus => {
     case 'PR_DECLINED':
     case 'PR_DELETED':
     case 'REJECTED':
+    case 'CANCELLED':
     case 'COMPLETED':
       return 'COMPLETED';
+    case 'PENDING_AWS_VERIFICATION':
+      // Git is done, but this is deliberately NOT 'COMPLETED' yet - the
+      // whole point of gating on AWS-side verification is that the
+      // requester shouldn't be told they're done until the access is
+      // actually confirmed live. Falls into the same bucket as every
+      // other still-moving state.
+      return 'IN_PROGRESS';
     default:
       return 'IN_PROGRESS';
+  }
+};
+
+// Whether a request is still early enough in its lifecycle for the
+// requester to cancel it themselves - mirrors the backend's own
+// authoritative check (stage_index >= 0, i.e. it has merged to dev) in
+// the /dpc/requests/{id}/cancel handler (lambda/handler.py), just from
+// the raw status string since stage_index itself isn't exposed to the
+// frontend. This is only ever used to decide whether to show/enable the
+// Cancel button - the backend re-checks and is the real source of truth,
+// so a stale/optimistic client-side status can only hide the button a
+// little too eagerly, never let through a cancel that shouldn't succeed.
+export const isRequestCancellable = (status: string): boolean => {
+  if (status.includes('_MERGED_AWAITING_')) return false;
+  switch (status) {
+    case 'REQUEST_RECEIVED':
+    case 'QUEUED':
+    case 'PR_CREATED':
+    case 'PR_UPDATED':
+    case 'PR_APPROVED':
+    case 'PR_NEEDS_WORK':
+    case 'SYNC_FAILED':
+      return true;
+    default:
+      return false;
   }
 };
 
@@ -326,6 +383,10 @@ export interface ApiGatewayRequestPayload {
   business_justification?: string;
   submitted_by: RequestedBy;
   environments: ApiGatewayEnvironments;
+  // Omitted (equivalent to 'WHITELIST') unless this is a de-whitelist
+  // request from Current Whitelist's remove action - see
+  // update_yaml_data(request_type=...) in lambda-gitops/handler.py.
+  request_type?: 'WHITELIST' | 'DEWHITELIST';
 }
 
 // API Gateway Success Response
@@ -377,5 +438,9 @@ export interface BackendRequest {
     aws_region?: string;
     submitted_by?: RequestedBy;
     environments?: unknown;
+    request_type?: string;
   };
+  // Merged in by /dpc/listrequests (and /dpc/requests/{id}) via
+  // stage_summary() - see WhitelistRequest.prUrls above.
+  prUrls?: Record<string, string | null>;
 }

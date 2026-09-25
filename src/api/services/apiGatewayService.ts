@@ -19,7 +19,8 @@ import { v4 as uuidv4 } from 'uuid';
  */
 export const transformToApiGatewayPayload = (
   formData: CreateRequestFormData,
-  submittedBy: RequestedBy
+  submittedBy: RequestedBy,
+  requestType: 'WHITELIST' | 'DEWHITELIST' = 'WHITELIST'
 ): ApiGatewayRequestPayload => {
   const payload: ApiGatewayRequestPayload = {
     request_id: `REQ-${uuidv4().substring(0, 8).toUpperCase()}`,
@@ -28,6 +29,10 @@ export const transformToApiGatewayPayload = (
     business_justification: formData.businessJustification,
     submitted_by: submittedBy,
     environments: {},
+    // Omit for the ordinary/default case rather than always sending
+    // 'WHITELIST', so an older backend deployment that doesn't know this
+    // field yet sees an identical payload to before.
+    ...(requestType === 'DEWHITELIST' ? { request_type: requestType } : {}),
   };
 
   // Transform environments
@@ -71,11 +76,12 @@ export const transformToApiGatewayPayload = (
  */
 export const submitRequest = async (
   formData: CreateRequestFormData,
-  submittedBy: RequestedBy
+  submittedBy: RequestedBy,
+  requestType: 'WHITELIST' | 'DEWHITELIST' = 'WHITELIST'
 ): Promise<ApiGatewaySuccessResponse> => {
   try {
     // Transform form data to API Gateway format
-    const payload = transformToApiGatewayPayload(formData, submittedBy);
+    const payload = transformToApiGatewayPayload(formData, submittedBy, requestType);
 
     console.log('[API GATEWAY] Submitting request to API Gateway');
     console.log(

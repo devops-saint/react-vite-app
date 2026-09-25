@@ -108,7 +108,12 @@ resource "aws_iam_role_policy" "lambda" {
         Effect = "Allow"
         # DeleteItem is required to release a resolved promotion's
         # LOCK#<branch> item once its PR merges/is declined/is closed.
-        Action = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]
+        # Scan (in addition to the targeted ops above) is required by
+        # handle_validation_sweep (VALIDATE_SWEEP), which has to find
+        # every PENDING_AWS_VERIFICATION item - see the comment on
+        # _scan_by_status in handler.py for why a GSI wasn't added just
+        # for this.
+        Action = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Scan"]
         Resource = [
           aws_dynamodb_table.requests.arn,
           "${aws_dynamodb_table.requests.arn}/index/submitted-by-created-at",
@@ -119,6 +124,19 @@ resource "aws_iam_role_policy" "lambda" {
         Effect   = "Allow"
         Action   = ["lambda:InvokeFunction"]
         Resource = aws_lambda_function.gitops.arn
+      },
+      {
+        # Cross-account AWS-state verification (see the AWS-SIDE ACCESS
+        # VERIFICATION comment block in handler.py). Each target account
+        # (DEV/QA/PRD) must define a "dpc-portal-validator" role whose
+        # trust policy allows this role to assume it - that provisioning
+        # happens outside this repo, in each target account. Scoped to
+        # the convention name rather than a wildcard "*" resource, but
+        # still account-agnostic since the actual gate is each target
+        # account's own trust policy on that role.
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole"]
+        Resource = ["arn:aws:iam::*:role/dpc-portal-validator"]
       },
       {
         Effect   = "Allow"
@@ -174,6 +192,18 @@ resource "aws_lambda_function" "request_api" {
       # How long a MARKETLOCK can sit claimed before _claim_market_lock
       # treats it as abandoned and force-releases it (see handler.py).
       MARKET_LOCK_STALE_SECONDS = var.market_lock_stale_seconds
+      # AWS-side access verification (see handler.py's AWS-SIDE ACCESS
+      # VERIFICATION block) - per-env target account id (mirrors
+      # VITE_AWS_ACCOUNT_ID_* on the frontend) and per-env cross-account
+      # validation role ARN this Lambda assumes to read the agent role's
+      # real IAM policy. Empty/unset for an env just means requests
+      # targeting it stay PENDING_AWS_VERIFICATION until it's configured.
+      AWS_ACCOUNT_ID_DEV        = var.aws_account_id_dev
+      AWS_ACCOUNT_ID_QA         = var.aws_account_id_qa
+      AWS_ACCOUNT_ID_PRD        = var.aws_account_id_prd
+      AWS_VALIDATION_ROLE_ARN_DEV = var.aws_validation_role_arn_dev
+      AWS_VALIDATION_ROLE_ARN_QA  = var.aws_validation_role_arn_qa
+      AWS_VALIDATION_ROLE_ARN_PRD = var.aws_validation_role_arn_prd
     }
   }
 
@@ -379,6 +409,33 @@ resource "aws_lambda_permission" "eventbridge_sweep" {
   source_arn    = aws_cloudwatch_event_rule.gitops_sweep.arn
 }
 
+# Periodically checks every PENDING_AWS_VERIFICATION request's real AWS
+# IAM state and flips it to COMPLETED once confirmed - see
+# handle_validation_sweep and the AWS-SIDE ACCESS VERIFICATION comment
+# block in handler.py.
+resource "aws_cloudwatch_event_rule" "aws_verification_sweep" {
+  name                = "${local.name}-aws-verification-sweep"
+  description         = "Checks PENDING_AWS_VERIFICATION requests against the live agent-role IAM policy and completes them once confirmed"
+  schedule_expression = var.verification_sweep_schedule_expression
+  tags                = local.tags
+}
+
+resource "aws_cloudwatch_event_target" "aws_verification_sweep" {
+  rule = aws_cloudwatch_event_rule.aws_verification_sweep.name
+  arn  = aws_lambda_function.request_api.arn
+  input = jsonencode({
+    action = "VALIDATE_SWEEP"
+  })
+}
+
+resource "aws_lambda_permission" "eventbridge_verification_sweep" {
+  statement_id  = "AllowEventBridgeVerificationSweepInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.request_api.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.aws_verification_sweep.arn
+}
+
 resource "aws_apigatewayv2_api" "requests" {
   name          = "${local.name}-requests"
   protocol_type = "HTTP"
@@ -444,6 +501,12 @@ resource "aws_apigatewayv2_route" "release_market_lock" {
 resource "aws_apigatewayv2_route" "retry_promotion" {
   api_id    = aws_apigatewayv2_api.requests.id
   route_key = "POST /dpc/requests/{request_id}/retry-promotion"
+  target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
+}
+
+resource "aws_apigatewayv2_route" "cancel_request" {
+  api_id    = aws_apigatewayv2_api.requests.id
+  route_key = "POST /dpc/requests/{request_id}/cancel"
   target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
 }
 

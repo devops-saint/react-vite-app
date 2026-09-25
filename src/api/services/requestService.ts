@@ -99,6 +99,11 @@ const transformBackendRequest = (
     status: backendRequest.status as WhitelistRequest['status'],
     createdAt: backendRequest.createdAt,
     updatedAt: backendRequest.createdAt, // Backend doesn't provide updatedAt
+    prUrls: backendRequest.prUrls,
+    requestType:
+      (payload.request_type || '').toUpperCase() === 'DEWHITELIST'
+        ? 'DEWHITELIST'
+        : 'WHITELIST',
   };
 };
 
@@ -108,11 +113,13 @@ export const requestService = {
    */
   createRequest: async (
     data: CreateRequestFormData,
-    submittedBy: RequestedBy
+    submittedBy: RequestedBy,
+    requestType: 'WHITELIST' | 'DEWHITELIST' = 'WHITELIST'
   ): Promise<WhitelistRequest> => {
     console.log('[REQUEST SERVICE] createRequest called', {
       apiBaseUrl: import.meta.env.VITE_API_BASE_URL,
       marketCode: data.marketCode,
+      requestType,
     });
 
     try {
@@ -121,7 +128,8 @@ export const requestService = {
       // Submit to API Gateway
       const apiResponse = await apiGatewayService.submitRequest(
         data,
-        submittedBy
+        submittedBy,
+        requestType
       );
 
       console.log('[REQUEST SERVICE] API Gateway response:', apiResponse);
@@ -145,6 +153,7 @@ export const requestService = {
         status: (apiResponse.status as WhitelistRequest['status']) || 'REQUEST_RECEIVED',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
+        requestType,
       };
 
       return newRequest;
@@ -157,6 +166,60 @@ export const requestService = {
           : 'Failed to submit request to API Gateway'
       );
     }
+  },
+
+  /**
+   * Submit a de-whitelist request for a single already-whitelisted
+   * resource (the Current Whitelist page's per-item remove/X action) -
+   * builds the same CreateRequestFormData shape createRequest expects,
+   * scoped to exactly one environment/one resource, and tags it
+   * requestType: 'DEWHITELIST' so the backend removes instead of adds.
+   */
+  createDewhitelistRequest: async (
+    params: {
+      marketCode: string;
+      marketName: string;
+      environment: EnvironmentName;
+      resourceType: 's3Buckets' | 'secretsManager' | 'kmsKeys' | 'lambdaFunctions';
+      resourceValue: string;
+      businessJustification: string;
+    },
+    submittedBy: RequestedBy
+  ): Promise<WhitelistRequest> => {
+    const environments: Environment[] = [
+      {
+        environment: params.environment,
+        resources: {
+          s3Buckets:
+            params.resourceType === 's3Buckets'
+              ? [{ bucketName: params.resourceValue }]
+              : [],
+          secretsManager:
+            params.resourceType === 'secretsManager'
+              ? [{ secretArn: params.resourceValue }]
+              : [],
+          kmsKeys:
+            params.resourceType === 'kmsKeys'
+              ? [{ keyArn: params.resourceValue }]
+              : [],
+          lambdaFunctions:
+            params.resourceType === 'lambdaFunctions'
+              ? [{ functionArn: params.resourceValue }]
+              : [],
+        },
+      },
+    ];
+
+    return requestService.createRequest(
+      {
+        marketCode: params.marketCode,
+        marketName: params.marketName,
+        businessJustification: params.businessJustification,
+        environments,
+      },
+      submittedBy,
+      'DEWHITELIST'
+    );
   },
 
   /**
@@ -438,6 +501,31 @@ export const requestService = {
       nextBranch: string;
       marketCode: string;
     }>(`/requests/${requestId}/retry-promotion`);
+    return response.data;
+  },
+
+  /**
+   * Cancel a request the requester themselves submitted, as long as it
+   * hasn't merged to dev yet (the backend re-checks and is the real
+   * source of truth - see isRequestCancellable in request.types.ts for
+   * the client-side gate this mirrors). Best-effort branch/PR cleanup on
+   * Bitbucket/GitHub happens asynchronously after this returns; the
+   * request's own status is already CANCELLED by the time this resolves.
+   */
+  cancelRequest: async (
+    requestId: string,
+    userId: string,
+    reason?: string
+  ): Promise<{ message: string; requestId: string; status: string }> => {
+    const response = await apiGatewayAxios.post<{
+      message: string;
+      requestId: string;
+      status: string;
+    }>(
+      `/requests/${requestId}/cancel`,
+      reason ? { reason } : {},
+      { params: { userId } }
+    );
     return response.data;
   },
 

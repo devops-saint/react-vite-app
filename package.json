@@ -18,6 +18,8 @@
     "test:coverage": "vitest --coverage",
     "e2e": "playwright test",
     "e2e:ui": "playwright test --ui",
+    "e2e:login": "node e2e/login.mjs",
+    "e2e:type-check": "tsc --noEmit -p tsconfig.e2e.json",
     "prepare": "husky"
   },
   "dependencies": {

@@ -116,6 +116,26 @@ export const config = {
     } as Record<string, string>,
   },
 
+  // Cross-account policy preview (see buildPolicyPreview in
+  // src/utils/policyPreview.ts). These are NOT read from the real
+  // terraform module that defines the agent role's actual policy - that
+  // module isn't part of this repo (only the portal's own Lambda roles
+  // are, in terraform-org/main.tf) - so this is a representative,
+  // standard-AWS-pattern action list per resource type, purely to give
+  // requesters a sense of what they're granting before/after submitting.
+  // Swap these for the real template once it's available, via .env -
+  // nothing else needs to change.
+  policyTemplates: {
+    s3: (import.meta.env['VITE_POLICY_TEMPLATE_S3'] || 's3:GetObject,s3:ListBucket')
+      .split(',').map((a) => a.trim()).filter(Boolean),
+    secretsManager: (import.meta.env['VITE_POLICY_TEMPLATE_SECRETS'] || 'secretsmanager:GetSecretValue,secretsmanager:DescribeSecret')
+      .split(',').map((a) => a.trim()).filter(Boolean),
+    kmsKeys: (import.meta.env['VITE_POLICY_TEMPLATE_KMS'] || 'kms:Decrypt,kms:DescribeKey')
+      .split(',').map((a) => a.trim()).filter(Boolean),
+    lambdaFunctions: (import.meta.env['VITE_POLICY_TEMPLATE_LAMBDA'] || 'lambda:InvokeFunction')
+      .split(',').map((a) => a.trim()).filter(Boolean),
+  },
+
   // Feature Flags
   features: {
     enableDevtools: import.meta.env.VITE_ENABLE_DEVTOOLS === 'true',

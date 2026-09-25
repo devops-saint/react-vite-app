@@ -100,6 +100,48 @@ variable "sweep_schedule_expression" {
   default     = "rate(10 minutes)"
 }
 
+variable "verification_sweep_schedule_expression" {
+  description = "EventBridge schedule for the AWS-side access verification sweep (handle_validation_sweep), which confirms PENDING_AWS_VERIFICATION requests against the real agent-role IAM policy before marking them COMPLETED."
+  type        = string
+  default     = "rate(10 minutes)"
+}
+
+variable "aws_account_id_dev" {
+  description = "AWS account id for the DEV agent role, used to build its cross-account IAM role ARN for AWS-side access verification. Mirrors VITE_AWS_ACCOUNT_ID_DEV on the frontend. Empty disables verification for DEV."
+  type        = string
+  default     = ""
+}
+
+variable "aws_account_id_qa" {
+  description = "Same as aws_account_id_dev, for QA."
+  type        = string
+  default     = ""
+}
+
+variable "aws_account_id_prd" {
+  description = "Same as aws_account_id_dev, for PRD."
+  type        = string
+  default     = ""
+}
+
+variable "aws_validation_role_arn_dev" {
+  description = "ARN of the DEV account's dpc-portal-validator role (see the AWS-SIDE ACCESS VERIFICATION comment block in handler.py for the cross-account trust convention). Empty disables verification for DEV."
+  type        = string
+  default     = ""
+}
+
+variable "aws_validation_role_arn_qa" {
+  description = "Same as aws_validation_role_arn_dev, for QA."
+  type        = string
+  default     = ""
+}
+
+variable "aws_validation_role_arn_prd" {
+  description = "Same as aws_validation_role_arn_dev, for PRD."
+  type        = string
+  default     = ""
+}
+
 variable "enable_gitops_dlq" {
   description = "Whether to create the gitops_dlq SQS queue (and the Lambda on-failure destination pointing at it). Some AWS orgs deny sqs:CreateQueue via a Service Control Policy - set this to false in that case. handle_sweep's automatic retry sweep does not depend on this queue at all; only the last-resort manual-inspection visibility for an event that exhausted every retry (in-function and Lambda's own built-in async retries) is lost when this is false."
   type        = bool

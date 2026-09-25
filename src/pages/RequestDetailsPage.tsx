@@ -14,16 +14,27 @@ import {
   ListItemText,
   Link,
   Alert,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  TextField,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import DownloadIcon from '@mui/icons-material/Download';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
-import { Timeline, Loader, ErrorState, StatusChip, AgentRoleArn } from '@/components/common';
+import CancelIcon from '@mui/icons-material/Cancel';
+import { Timeline, Loader, ErrorState, StatusChip, AgentRoleArn, PolicyPreviewButton } from '@/components/common';
 import { config } from '@/config';
 import { requestService } from '@/api/services';
 import { useAuth } from '@/auth';
-import { RequestDetails, getUserFacingStatus, USER_FACING_STATUS_CONFIG } from '@/types/request.types';
+import {
+  RequestDetails,
+  getUserFacingStatus,
+  USER_FACING_STATUS_CONFIG,
+  isRequestCancellable,
+} from '@/types/request.types';
 import { RESOURCE_TYPE_META } from '@/constants/resourceTypes';
 import { UserRole } from '@/types/auth.types';
 
@@ -128,6 +139,38 @@ export function RequestDetailsPage() {
         message: null,
         error:
           error instanceof Error ? error.message : 'Failed to retry promotion',
+      });
+    }
+  };
+
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelState, setCancelState] = useState<{
+    loading: boolean;
+    error: string | null;
+  }>({ loading: false, error: null });
+
+  const closeCancelDialog = () => {
+    if (cancelState.loading) return; // don't let a stray close interrupt an in-flight submit
+    setCancelDialogOpen(false);
+    setCancelReason('');
+    setCancelState({ loading: false, error: null });
+  };
+
+  const handleCancelRequest = async () => {
+    if (!id || !user?.id) return;
+    setCancelState({ loading: true, error: null });
+    try {
+      await requestService.cancelRequest(id, user.id, cancelReason.trim() || undefined);
+      setCancelDialogOpen(false);
+      setCancelReason('');
+      setCancelState({ loading: false, error: null });
+      const refreshed = await requestService.getRequestById(id, user.id);
+      setRequest(refreshed);
+    } catch (error) {
+      setCancelState({
+        loading: false,
+        error: error instanceof Error ? error.message : 'Failed to cancel the request',
       });
     }
   };
@@ -261,6 +304,16 @@ export function RequestDetailsPage() {
           </Box>
         </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
+          {isRequestCancellable(request.status) && (
+            <Button
+              variant="outlined"
+              color="error"
+              startIcon={<CancelIcon />}
+              onClick={() => setCancelDialogOpen(true)}
+            >
+              Cancel Request
+            </Button>
+          )}
           <Button
             variant="outlined"
             startIcon={<DownloadIcon />}
@@ -337,6 +390,22 @@ export function RequestDetailsPage() {
                   {env.environment} Environment
                 </Typography>
                 <AgentRoleArn environment={env.environment} marketCode={request.marketCode} />
+                {/* A policy preview shows what access would be GRANTED - meaningless
+                    (and misleading) for a de-whitelist request, which only removes
+                    access. Mirrors the same requestMode-gating already on Create
+                    Request (see PolicyPreviewButton usage there). */}
+                {request.requestType !== 'DEWHITELIST' && (
+                  <Box sx={{ mb: 2 }}>
+                    <PolicyPreviewButton
+                      resources={{
+                        s3Buckets: env.resources.s3Buckets.map((b) => b.bucketName),
+                        secretsManager: env.resources.secretsManager.map((s2) => s2.secretArn),
+                        kmsKeys: env.resources.kmsKeys.map((k) => k.keyArn),
+                        lambdaFunctions: env.resources.lambdaFunctions.map((f) => f.functionArn),
+                      }}
+                    />
+                  </Box>
+                )}
                 <Box sx={{ pl: 2 }}>
                   {env.resources.s3Buckets.length > 0 && (
                     <Box sx={{ mb: 2 }}>
@@ -523,6 +592,26 @@ export function RequestDetailsPage() {
 
         {/* Sidebar */}
         <Grid item xs={12} md={4}>
+          {/* AWS verification notice - the git side (PR merge) is done, but
+              this Lambda hasn't yet confirmed the change is actually live
+              in the target AWS account's IAM policy. handle_validation_sweep
+              (an EventBridge sweep) checks this automatically every ~10
+              minutes and flips the request to COMPLETED once confirmed -
+              see the AWS-SIDE ACCESS VERIFICATION block in lambda/handler.py.
+              No action needed here; this is purely informational. */}
+          {request.status === 'PENDING_AWS_VERIFICATION' && (
+            <Paper sx={{ p: 3, mb: 3 }}>
+              <Alert severity="warning">
+                The pull request has merged, but this request stays open
+                until we&apos;ve confirmed the change is actually live in
+                AWS - this is checked automatically every few minutes.
+                {typeof request.verificationAttempts === 'number' && request.verificationAttempts > 0
+                  ? ` Checked ${request.verificationAttempts} time${request.verificationAttempts === 1 ? '' : 's'} so far.`
+                  : ''}
+              </Alert>
+            </Paper>
+          )}
+
           {/* Queued notice - this request is held back because another
               in-flight request for the same market already holds the
               MARKETLOCK (see lambda/handler.py). It resumes automatically
@@ -672,6 +761,44 @@ export function RequestDetailsPage() {
           )}
         </Grid>
       </Grid>
+
+      <Dialog open={cancelDialogOpen} onClose={closeCancelDialog} maxWidth="sm" fullWidth>
+        <DialogTitle>Cancel Request</DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            This cancels {request.requestId} before it&apos;s merged to DEV - no branch or pull
+            request will be left behind. This can&apos;t be undone.
+          </Alert>
+          <TextField
+            label="Reason (optional)"
+            placeholder="Why is this being cancelled?"
+            multiline
+            minRows={2}
+            fullWidth
+            value={cancelReason}
+            onChange={(e) => setCancelReason(e.target.value)}
+            disabled={cancelState.loading}
+          />
+          {cancelState.error && (
+            <Alert severity="error" sx={{ mt: 2 }}>
+              {cancelState.error}
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeCancelDialog} disabled={cancelState.loading}>
+            Keep Request
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={() => void handleCancelRequest()}
+            disabled={cancelState.loading}
+          >
+            {cancelState.loading ? 'Cancelling…' : 'Cancel Request'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Container>
   );
 }

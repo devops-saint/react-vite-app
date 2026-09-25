@@ -21,8 +21,11 @@ import {
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import Tooltip from '@mui/material/Tooltip';
 import { requestService } from '@/api/services';
 import { useAuth } from '@/auth';
+import { UserRole } from '@/types/auth.types';
 import {
   WhitelistRequest,
   StatusGroup,
@@ -36,7 +39,8 @@ import { Loader, EmptyState, ErrorState, StatusChip } from '@/components/common'
 
 export function MyRequestsPage() {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, hasRole } = useAuth();
+  const isAdmin = hasRole(UserRole.ADMIN);
   const [searchParams, setSearchParams] = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -269,19 +273,24 @@ export function MyRequestsPage() {
                 <TableCell>Status</TableCell>
                 <TableCell>Created Date</TableCell>
                 <TableCell>Updated Date</TableCell>
+                {isAdmin && <TableCell align="center">PRs</TableCell>}
               </TableRow>
             </TableHead>
             <TableBody>
               {paginatedRequests.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
+                  <TableCell colSpan={isAdmin ? 7 : 6} align="center" sx={{ py: 4 }}>
                     <Typography variant="body1" color="text.secondary">
                       No requests match your filters
                     </Typography>
                   </TableCell>
                 </TableRow>
               ) : (
-                paginatedRequests.map((request) => (
+                paginatedRequests.map((request) => {
+                  const prLinks = Object.entries(request.prUrls || {}).filter(
+                    (entry): entry is [string, string] => Boolean(entry[1])
+                  );
+                  return (
                   <TableRow
                     key={request.requestId}
                     hover
@@ -313,8 +322,34 @@ export function MyRequestsPage() {
                     <TableCell>
                       {new Date(request.updatedAt).toLocaleDateString()}
                     </TableCell>
+                    {isAdmin && (
+                      <TableCell align="center" onClick={(e) => e.stopPropagation()}>
+                        {prLinks.length === 0 ? (
+                          <Typography variant="caption" color="text.disabled">
+                            —
+                          </Typography>
+                        ) : (
+                          <Box sx={{ display: 'flex', gap: 0.5, justifyContent: 'center' }}>
+                            {prLinks.map(([stage, url]) => (
+                              <Tooltip key={stage} title={`${stage} pull request`}>
+                                <IconButton
+                                  size="small"
+                                  component="a"
+                                  href={url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  <OpenInNewIcon fontSize="inherit" />
+                                </IconButton>
+                              </Tooltip>
+                            ))}
+                          </Box>
+                        )}
+                      </TableCell>
+                    )}
                   </TableRow>
-                ))
+                  );
+                })
               )}
             </TableBody>
           </Table>

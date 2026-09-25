@@ -71,3 +71,4 @@ __pycache__/
 # Scratch dir used when moving files that a sandboxed shell couldn't
 # delete directly - never meant to be committed.
 _to_delete/
+e2e/.auth/

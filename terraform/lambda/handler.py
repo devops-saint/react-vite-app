@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import os
 import uuid
@@ -190,10 +191,14 @@ def frontend_request(item):
         "aws": {"accountId": payload.get("aws_account_id", "123456789012"), "region": payload.get("aws_region", "eu-west-1")},
         "environments": environments,
         "status": item["status"],
+        "requestType": str(payload.get("request_type", "WHITELIST")).upper(),
         "targetStages": item.get("target_stages", ["dev"]),
         "stageIndex": item.get("stage_index", -1),
         "createdAt": item["createdAt"],
         "updatedAt": item.get("updatedAt", item["createdAt"]),
+        "verificationAttempts": item.get("verificationAttempts", 0),
+        "lastVerificationAttemptAt": item.get("lastVerificationAttemptAt"),
+        "lastVerificationDetail": item.get("lastVerificationDetail"),
     }
 
 
@@ -216,6 +221,33 @@ def trigger_gitops(request_id, payload):
         )
     except ClientError as error:
         print(f"[GITOPS] Failed to trigger GitOps lambda for {request_id}: {error}")
+
+
+def trigger_cancel(request_id, payload):
+    """Fire-and-forget: asks the GitOps lambda to decline/close any open
+    PR and delete the gitops/{request_id} branch for a cancelled request.
+    Best-effort cleanup only - the request's own status is already set to
+    CANCELLED synchronously by handle_request's /cancel handler regardless
+    of whether this succeeds, since a leftover Bitbucket/GitHub-side
+    branch or PR is cosmetic once the portal itself has abandoned the
+    request."""
+    if not gitops_lambda_name:
+        print(f"[CANCEL] GITOPS_LAMBDA_NAME not configured - skipping cleanup for {request_id}")
+        return
+    try:
+        lambda_client.invoke(
+            FunctionName=gitops_lambda_name,
+            InvocationType="Event",
+            Payload=json.dumps(
+                {
+                    "request_id": request_id,
+                    "action": "CANCEL",
+                    "payload": payload,
+                }
+            ),
+        )
+    except ClientError as error:
+        print(f"[CANCEL] Failed to trigger GitOps cleanup for {request_id}: {error}")
 
 
 def _join_promotion_lock(lock_key, request_id):
@@ -683,6 +715,263 @@ def _update_item(request_id, status, event_key, now, stage_index=None, comments=
         raise
 
 
+# =====================================================
+# AWS-SIDE ACCESS VERIFICATION (post-merge, before COMPLETED)
+# =====================================================
+# Once a request's final-stage PR merges, the change is live in git but
+# not yet confirmed live in AWS - Matillion's agent picks up the new
+# values.<env>.yaml on its own schedule/redeploy. Rather than mark a
+# request COMPLETED purely because git merged, this Lambda periodically
+# (action=VALIDATE_SWEEP, an EventBridge-triggered sweep - see main.tf)
+# reads the actual IAM policy attached to the target market/environment's
+# agent role and only flips PENDING_AWS_VERIFICATION -> COMPLETED once
+# the requested resources are (for WHITELIST) present, or (for
+# DEWHITELIST) absent, from that policy.
+#
+# Cross-account convention (new - nothing like this existed before):
+# DEV/QA/PRD each live in their own AWS account (see buildAgentRoleArn in
+# src/config/index.ts for the account-id-per-env pattern this mirrors).
+# This Lambda's own role has no standing access into those accounts, so
+# each target account must define a role - by convention named
+# "dpc-portal-validator" - whose trust policy allows this Lambda's own
+# execution role (aws_iam_role.lambda, this same stack) to sts:AssumeRole
+# into it, and whose permissions policy grants at least iam:GetRole,
+# iam:ListRolePolicies, iam:ListAttachedRolePolicies, iam:GetRolePolicy
+# and iam:GetPolicyVersion, scoped to the matillion-dpc-*-agent-*-irsa
+# role(s) in that account. Provisioning that role/trust in each target
+# account is out of scope for this repo (those accounts aren't managed
+# here) - AWS_VALIDATION_ROLE_ARN_DEV/QA/PRD below is that role's ARN
+# once it exists; an unset/empty value for a given environment means
+# verification is skipped for requests targeting it (they stay
+# PENDING_AWS_VERIFICATION indefinitely until the env var is configured -
+# logged every sweep, not silently dropped).
+AWS_ACCOUNT_IDS = {
+    "DEV": os.environ.get("AWS_ACCOUNT_ID_DEV", ""),
+    "QA": os.environ.get("AWS_ACCOUNT_ID_QA", ""),
+    "PRD": os.environ.get("AWS_ACCOUNT_ID_PRD", ""),
+}
+AWS_VALIDATION_ROLE_ARNS = {
+    "DEV": os.environ.get("AWS_VALIDATION_ROLE_ARN_DEV", ""),
+    "QA": os.environ.get("AWS_VALIDATION_ROLE_ARN_QA", ""),
+    "PRD": os.environ.get("AWS_VALIDATION_ROLE_ARN_PRD", ""),
+}
+MAX_VERIFICATION_ATTEMPTS = int(os.environ.get("MAX_VERIFICATION_ATTEMPTS", "144"))
+sts_client = boto3.client("sts")
+
+
+def _build_agent_role_arn(environment, market_code):
+    """Mirrors buildAgentRoleArn() in src/config/index.ts exactly - same
+    naming convention, same lower-casing. Returns None when this env's
+    account id isn't configured."""
+    account_id = AWS_ACCOUNT_IDS.get(environment.upper())
+    if not account_id:
+        return None
+    return (
+        f"arn:aws:iam::{account_id}:role/"
+        f"matillion-dpc-{environment.lower()}-agent-{market_code.lower()}-irsa"
+    )
+
+
+def _assume_validation_role(environment):
+    """Returns a boto3 IAM client using temporary credentials for the
+    target account's dpc-portal-validator role, or None if that
+    environment has no validation role configured (or the assume-role
+    call itself fails, e.g. trust not yet set up on the target side)."""
+    role_arn = AWS_VALIDATION_ROLE_ARNS.get(environment.upper())
+    if not role_arn:
+        return None
+    try:
+        creds = sts_client.assume_role(
+            RoleArn=role_arn,
+            RoleSessionName="dpc-portal-verify",
+            DurationSeconds=900,
+        )["Credentials"]
+    except ClientError as error:
+        print(f"[VERIFY] Could not assume validation role for {environment}: {error}")
+        return None
+    return boto3.client(
+        "iam",
+        aws_access_key_id=creds["AccessKeyId"],
+        aws_secret_access_key=creds["SecretAccessKey"],
+        aws_session_token=creds["SessionToken"],
+    )
+
+
+def _extract_allow_resources(policy_document):
+    """Flattens every Resource entry from every Allow statement in an IAM
+    policy document into a flat list of resource ARN patterns. Deny
+    statements are ignored - this is a presence check for what the role
+    CAN reach, matching the same representative-not-exhaustive spirit as
+    buildPolicyPreview on the frontend, not a full policy simulator."""
+    resources = []
+    for statement in policy_document.get("Statement", []):
+        if statement.get("Effect") != "Allow":
+            continue
+        resource = statement.get("Resource", [])
+        if isinstance(resource, str):
+            resource = [resource]
+        resources.extend(resource)
+    return resources
+
+
+def _collect_role_policy_resources(iam_client, role_name):
+    """Every Allow-Resource pattern across a role's inline policies and
+    its attached managed policies' default versions, as one flat list.
+    Returns None (not []) on any read failure, so callers can tell
+    "role has no matching resources" apart from "couldn't read the
+    role's policies at all"."""
+    resources = []
+    try:
+        inline_names = iam_client.list_role_policies(RoleName=role_name)["PolicyNames"]
+        for name in inline_names:
+            doc = iam_client.get_role_policy(RoleName=role_name, PolicyName=name)["PolicyDocument"]
+            resources.extend(_extract_allow_resources(doc))
+
+        attached = iam_client.list_attached_role_policies(RoleName=role_name)["AttachedPolicies"]
+        for policy in attached:
+            policy_arn = policy["PolicyArn"]
+            version_id = iam_client.get_policy(PolicyArn=policy_arn)["Policy"]["DefaultVersionId"]
+            doc = iam_client.get_policy_version(PolicyArn=policy_arn, VersionId=version_id)["PolicyVersion"]["Document"]
+            resources.extend(_extract_allow_resources(doc))
+    except ClientError as error:
+        print(f"[VERIFY] Failed reading policies for role {role_name}: {error}")
+        return None
+    return resources
+
+
+def _resource_covered(resource_arn, allowed_patterns):
+    """True if resource_arn matches any allowed pattern exactly or via
+    IAM-style wildcards (*, ?) - fnmatch handles both."""
+    return any(fnmatch.fnmatchcase(resource_arn, pattern) for pattern in allowed_patterns)
+
+
+def _requested_resource_arns(env_resources):
+    """Mirrors buildPolicyPreview()'s ARN construction (src/utils/policyPreview.ts)
+    exactly: S3 entries are bucket names unless already a full ARN, and
+    get both the bucket-level and bucket/* object-level ARN; Secrets/KMS/
+    Lambda entries are already full ARNs and used as-is."""
+    arns = []
+    for bucket in env_resources.get("buckets", []):
+        if bucket.startswith("arn:aws:s3:::"):
+            arns.extend([bucket, f"{bucket}/*"])
+        else:
+            arns.extend([f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/*"])
+    arns.extend(env_resources.get("secrets", []))
+    arns.extend(env_resources.get("kmsKeys", []))
+    arns.extend(env_resources.get("functions", []))
+    return arns
+
+
+def verify_environment_access(market_code, environment, env_resources, request_type):
+    """Returns True (confirmed), False (not yet confirmed), or None
+    (skipped - no validation role configured for this env, or the agent
+    role/policies couldn't be read). For WHITELIST, every requested
+    resource ARN must be covered by an Allow statement on the market/
+    env's agent role; for DEWHITELIST, none of them may still be."""
+    role_arn = _build_agent_role_arn(environment, market_code)
+    if not role_arn:
+        return None
+    role_name = role_arn.rsplit("/", 1)[-1]
+
+    iam_client = _assume_validation_role(environment)
+    if iam_client is None:
+        return None
+
+    allowed_patterns = _collect_role_policy_resources(iam_client, role_name)
+    if allowed_patterns is None:
+        return None
+
+    requested = _requested_resource_arns(env_resources)
+    if not requested:
+        return True
+
+    covered = [_resource_covered(arn, allowed_patterns) for arn in requested]
+    if request_type == "DEWHITELIST":
+        return not any(covered)
+    return all(covered)
+
+
+def _record_verification_attempt(request_id, now, detail):
+    """Bumps verificationAttempts and records the latest attempt's
+    outcome, without touching status/history - a plain metadata update
+    so repeated sweep passes over a still-pending request don't fight
+    _update_item's status-changed guard (see its docstring)."""
+    try:
+        table.update_item(
+            Key={"request_id": request_id},
+            UpdateExpression=(
+                "SET verificationAttempts = if_not_exists(verificationAttempts, :zero) + :one, "
+                "lastVerificationAttemptAt = :now, lastVerificationDetail = :detail"
+            ),
+            ConditionExpression="attribute_exists(request_id)",
+            ExpressionAttributeValues={":zero": 0, ":one": 1, ":now": now, ":detail": detail},
+        )
+    except ClientError as error:
+        print(f"[VERIFY] Failed to record verification attempt for {request_id}: {error}")
+
+
+def _scan_by_status(status):
+    """Small-table full scan filtered by status - fine at this table's
+    expected size (mirrors the pattern already used for market-queue
+    lookups elsewhere), avoids needing a new GSI just for the sweep."""
+    items = []
+    kwargs = {"FilterExpression": Attr("status").eq(status)}
+    while True:
+        result = table.scan(**kwargs)
+        items.extend(result.get("Items", []))
+        last_key = result.get("LastEvaluatedKey")
+        if not last_key:
+            return items
+        kwargs["ExclusiveStartKey"] = last_key
+
+
+def handle_validation_sweep(event):
+    """EventBridge-triggered (action: VALIDATE_SWEEP) - for every request
+    sitting in PENDING_AWS_VERIFICATION, checks each of its requested
+    environments against the live agent-role IAM policy in that
+    environment's AWS account. All environments confirmed -> COMPLETED
+    (and the deferred requester-completion email finally goes out).
+    Anything not yet confirmed (or unverifiable - no validation role
+    configured) is left pending with its attempt recorded, so the UI can
+    show why a request is still waiting."""
+    now = datetime.now(timezone.utc).isoformat()
+    pending = _scan_by_status("PENDING_AWS_VERIFICATION")
+    checked = 0
+    completed = 0
+
+    for item in pending:
+        request_id = item["request_id"]
+        payload = item.get("payload", {})
+        market_code = payload.get("market_code", "")
+        request_type = str(payload.get("request_type", "WHITELIST")).upper()
+        environments = payload.get("environments", {})
+        if not market_code or not environments:
+            continue
+
+        checked += 1
+        results = {}
+        for env_name, env_resources in environments.items():
+            environment = env_name.upper()
+            results[environment] = verify_environment_access(market_code, environment, env_resources, request_type)
+
+        all_confirmed = all(value is True for value in results.values())
+        detail = json.dumps(results)
+
+        if all_confirmed:
+            updated = _update_item(request_id, "COMPLETED", "aws:verified", now, comments="AWS access verification confirmed")
+            if updated:
+                notify_requester_merged(updated)
+                completed += 1
+        else:
+            attempts = int(item.get("verificationAttempts", 0))
+            if attempts >= MAX_VERIFICATION_ATTEMPTS:
+                print(f"[VERIFY] {request_id} still unverified after {attempts} attempts: {detail}")
+            _record_verification_attempt(request_id, now, detail)
+
+    print(f"[VERIFY] Sweep checked {checked} pending request(s), completed {completed}")
+    return {"status": "OK", "checked": checked, "completed": completed}
+
+
 def handle_stage_event(event_key, request_ids, origin, promotion_key=None, pr_id=None, to_branch="dev"):
     """Applies one Bitbucket PR event to every request linked to that PR.
     `request_ids` has exactly one entry for the original custom-branch PR
@@ -759,8 +1048,14 @@ def handle_stage_event(event_key, request_ids, origin, promotion_key=None, pr_id
         market_code = item.get("payload", {}).get("market_code", "unknown")
 
         if is_final:
-            updated = _update_item(request_id, "COMPLETED", "pr:merged", now, stage_index=new_stage_index, comments=comments, stage=merged_stage)
-            notify_requester_merged(updated)
+            # Git has merged, but the change isn't confirmed live in AWS
+            # yet - PENDING_AWS_VERIFICATION, not COMPLETED, until the
+            # VALIDATE_SWEEP sweep (see handle_validation_sweep below)
+            # confirms the agent role's real IAM policy reflects it. The
+            # market lock still releases here (the git-side pipeline for
+            # this market really is done), but the requester's
+            # completion email is deferred to the sweep.
+            updated = _update_item(request_id, "PENDING_AWS_VERIFICATION", "pr:merged", now, stage_index=new_stage_index, comments=comments, stage=merged_stage)
             completed_ids.append(request_id)
             if updated:
                 _release_and_forward_market_lock(market_code, request_id, now)
@@ -905,6 +1200,13 @@ def handle_request(event):
                 ExclusiveStartKey=result["LastEvaluatedKey"],
             )
             items.extend(result.get("Items", []))
+        # Merge in prUrls (and the rest of stage_summary) per item so the
+        # My Requests list can show admin-only PR links too, not just the
+        # single-request detail view - stage_summary is a pure computation
+        # over fields already on each item (target_stages/stage_index/
+        # pr_<branch>), so this adds no extra reads.
+        for item in items:
+            item.update(stage_summary(item))
         return response(200, {"count": len(items), "requests": items}, origin)
 
     if method == "GET" and path.startswith("/dpc/requests/"):
@@ -970,6 +1272,78 @@ def handle_request(event):
 
         return response(200, whitelist_payload, origin)
 
+    if method == "POST" and path.startswith("/dpc/requests/") and path.endswith("/cancel"):
+        request_id = event.get("pathParameters", {}).get("request_id")
+        if not request_id:
+            return response(400, {"message": "request_id is required"}, origin)
+        if not user_id:
+            return response(400, {"message": "userId is required"}, origin)
+
+        item = table.get_item(Key={"request_id": request_id}).get("Item")
+        if not item or item.get("submitted_by_id") != user_id:
+            return response(404, {"message": "Request not found"}, origin)
+
+        # Cancellable only while this request hasn't merged to its first
+        # stage (dev) yet - stage_index only ever moves forward on a real
+        # merge (see advance_stage), so -1 reliably means "no merge has
+        # happened", for both a dev-only request and a multi-env one.
+        # Once it's merged to dev, other environments may already be
+        # riding a shared qa/master promotion PR alongside other markets'
+        # requests, so unwinding it safely is no longer possible from here
+        # - matches the requester-facing rule this was built for.
+        stage_index = int(item.get("stage_index", -1))
+        current_status = item.get("status")
+        if stage_index >= 0:
+            return response(
+                400,
+                {"message": "This request has already merged to DEV and can no longer be cancelled"},
+                origin,
+            )
+        if current_status in ("COMPLETED", "PR_DECLINED", "PR_DELETED", "CANCELLED"):
+            return response(
+                400,
+                {"message": "This request has already reached a final state and cannot be cancelled"},
+                origin,
+            )
+
+        try:
+            body = json.loads(event.get("body") or "{}")
+        except json.JSONDecodeError:
+            body = {}
+        reason = (body.get("reason") or "").strip()
+
+        now = datetime.now(timezone.utc).isoformat()
+        updated = _update_item(
+            request_id, "CANCELLED", "user:cancel", now,
+            comments=reason or "Cancelled by requester",
+        )
+        if updated is None:
+            # Status moved in the meantime (e.g. it merged to dev just
+            # before this landed) - report cleanly instead of silently
+            # applying nothing, since a naive retry could confuse a user
+            # who thinks they successfully cancelled a request that's now
+            # actually progressing.
+            return response(
+                409,
+                {"message": "This request's status just changed - please refresh and try again"},
+                origin,
+            )
+
+        market_code = (updated.get("payload") or {}).get("market_code")
+        if market_code:
+            # Safe even if this request was QUEUED (never claimed the
+            # lock) - the delete is conditioned on this request actually
+            # being the holder, so it's a no-op in that case.
+            _release_and_forward_market_lock(market_code, request_id, now)
+
+        trigger_cancel(request_id, updated.get("payload", {}))
+
+        return response(
+            200,
+            {"message": "Request cancelled", "requestId": request_id, "status": "CANCELLED"},
+            origin,
+        )
+
     if method == "POST" and path.startswith("/dpc/requests/") and path.endswith("/release-lock"):
         request_id = event.get("pathParameters", {}).get("request_id")
         if not request_id:
@@ -1027,6 +1401,15 @@ def handle_request(event):
 
 def lambda_handler(event, _context):
     print(event)
+    # EventBridge-triggered sweep - a different event shape entirely
+    # (no headers/path/method), so this has to be checked before
+    # anything else touches event.get("headers").
+    if event.get("action") == "VALIDATE_SWEEP":
+        try:
+            return handle_validation_sweep(event)
+        except Exception as error:
+            print(f"Unhandled validation sweep error: {error}")
+            return {"status": "ERROR", "message": str(error)}
     origin = event.get("headers", {}).get("origin")
     try:
         return handle_request(event)

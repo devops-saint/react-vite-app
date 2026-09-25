@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { config, buildRequestDetailsPath } from '@/config';
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
@@ -19,16 +20,18 @@ import {
   Typography,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
+import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import FunctionsOutlinedIcon from '@mui/icons-material/FunctionsOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import RemoveCircleOutlineIcon from '@mui/icons-material/RemoveCircleOutline';
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
 import { requestService } from '@/api/services';
 import { useAuth } from '@/auth';
-import { Snackbar } from '@/components/common';
+import { Snackbar, PolicyPreviewButton } from '@/components/common';
 import { CreateRequestFormData, CurrentWhitelist } from '@/types/request.types';
 import { NEUTRAL_RESOURCE_COLOR } from '@/constants/resourceTypes';
 
@@ -133,6 +136,16 @@ export function CreateRequestPage() {
   const { user } = useAuth();
   const [activeEnvironment, setActiveEnvironment] =
     useState<EnvironmentKey>('DEV');
+  // A whole submission is either an add or a remove - the backend's
+  // request_type is one value for the entire request (see
+  // update_yaml_data(request_type=...) in lambda-gitops/handler.py), so
+  // this can't vary per resource within one submission. Switching modes
+  // clears whatever's staged (see the ToggleButtonGroup onChange below)
+  // rather than letting an add and a remove sit side by side and then
+  // silently dropping half of it on submit.
+  const [requestMode, setRequestMode] = useState<'WHITELIST' | 'DEWHITELIST'>(
+    'WHITELIST'
+  );
   const [resources, setResources] = useState<ResourceState>(emptyResources);
   const [drafts, setDrafts] = useState<Record<ResourceKey, string>>({
     s3Buckets: '',
@@ -204,6 +217,24 @@ export function CreateRequestPage() {
     );
   };
 
+  // De-whitelist mode only ever offers resources that are actually live
+  // right now (the same source whitelistCache already fetches for the
+  // isAlreadyWhitelisted check above), minus whatever's already staged for
+  // removal - so there's no freeform typing, no ARN typos, and no way to
+  // "de-whitelist" something that was never whitelisted in the first
+  // place. Empty (not loading yet, or nothing live) just means the picker
+  // below has nothing to offer.
+  const resourceOptionsForDewhitelist = (resourceKey: ResourceKey) => {
+    const data = whitelistCache[`${marketCode}:${activeEnvironment}`];
+    if (!data || !data.exists) return [];
+    const staged = new Set(
+      resources[activeEnvironment][resourceKey].map((item) => item.toLowerCase())
+    );
+    return data[WHITELIST_FIELD[resourceKey]].filter(
+      (item) => !staged.has(item.toLowerCase())
+    );
+  };
+
   const market = config.markets.find((item) => item.code === marketCode);
   const totalResources = useMemo(
     () =>
@@ -212,6 +243,8 @@ export function CreateRequestPage() {
         .reduce((sum, items) => sum + items.length, 0),
     [resources]
   );
+  const manifestKey =
+    requestMode === 'DEWHITELIST' ? 'dewhitelist_request' : 'whitelist_request';
   const manifest = useMemo(() => {
     const output: Record<string, Record<string, string[]>> = {};
     environments.forEach(({ key }) => {
@@ -227,8 +260,8 @@ export function CreateRequestPage() {
         output[key.toLowerCase()] = configured;
     });
     if (format === 'json')
-      return JSON.stringify({ whitelist_request: output }, null, 2);
-    const lines = ['whitelist_request:'];
+      return JSON.stringify({ [manifestKey]: output }, null, 2);
+    const lines = [`${manifestKey}:`];
     Object.entries(output).forEach(([environment, configured]) => {
       lines.push(`  ${environment}:`);
       Object.entries(configured).forEach(([resource, values]) => {
@@ -236,8 +269,10 @@ export function CreateRequestPage() {
         values.forEach((value) => lines.push(`      - ${value}`));
       });
     });
-    return lines.length === 1 ? '  # No resources added yet' : lines.join('\n');
-  }, [format, resources]);
+    return lines.length === 1
+      ? `  # No resources ${requestMode === 'DEWHITELIST' ? 'selected' : 'added'} yet`
+      : lines.join('\n');
+  }, [format, resources, manifestKey, requestMode]);
 
   const addResource = (resourceType: (typeof resourceTypes)[number]) => {
     if (!marketCode) return;
@@ -282,6 +317,28 @@ export function CreateRequestPage() {
     setResourceErrors((current) => ({
       ...current,
       [resourceType.key]: undefined,
+    }));
+  };
+
+  // De-whitelist mode's counterpart to addResource - the value always
+  // comes from resourceOptionsForDewhitelist's picker (see the Autocomplete
+  // below), so it's already known to be live and valid; nothing left to
+  // validate beyond the plain duplicate-staging guard every add goes
+  // through.
+  const addExistingResource = (resourceKey: ResourceKey, value: string) => {
+    if (
+      resources[activeEnvironment][resourceKey].some(
+        (item) => item.toLowerCase() === value.toLowerCase()
+      )
+    ) {
+      return;
+    }
+    setResources((current) => ({
+      ...current,
+      [activeEnvironment]: {
+        ...current[activeEnvironment],
+        [resourceKey]: [...current[activeEnvironment][resourceKey], value],
+      },
     }));
   };
 
@@ -351,15 +408,18 @@ export function CreateRequestPage() {
     };
     try {
       setIsSubmitting(true);
-      const result = await requestService.createRequest(payload, {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-      });
+      const result = await requestService.createRequest(
+        payload,
+        { id: user.id, name: user.name, email: user.email },
+        requestMode
+      );
       setSnackbar({
         open: true,
         severity: 'success',
-        message: `Request ${result.requestId} submitted successfully.`,
+        message:
+          requestMode === 'DEWHITELIST'
+            ? `De-whitelist request ${result.requestId} submitted successfully.`
+            : `Request ${result.requestId} submitted successfully.`,
       });
       // Straight to the new request's own details page instead of the
       // My Requests list - a submitter checking on what they just filed no
@@ -396,6 +456,37 @@ export function CreateRequestPage() {
           Stage AWS resources by environment, then submit one complete request.
         </Typography>
       </Box>
+      <ToggleButtonGroup
+        exclusive
+        value={requestMode}
+        onChange={(_event, value: 'WHITELIST' | 'DEWHITELIST' | null) => {
+          if (!value || value === requestMode) return;
+          setRequestMode(value);
+          // An add and a remove can't share one request (see the
+          // requestMode state comment above) - switching modes starts the
+          // staged resources over rather than silently mixing them.
+          setResources(emptyResources());
+          setDrafts({
+            s3Buckets: '',
+            secretsManager: '',
+            kmsKeys: '',
+            lambdaFunctions: '',
+          });
+          setResourceErrors({});
+        }}
+        aria-label="Request type"
+        size="small"
+        sx={{ mb: 2.5 }}
+      >
+        <ToggleButton value="WHITELIST" sx={{ gap: 1, px: 2 }}>
+          <AddCircleOutlineIcon fontSize="small" />
+          Whitelist resources
+        </ToggleButton>
+        <ToggleButton value="DEWHITELIST" sx={{ gap: 1, px: 2 }}>
+          <RemoveCircleOutlineIcon fontSize="small" />
+          De-whitelist resources
+        </ToggleButton>
+      </ToggleButtonGroup>
       <Box
         sx={{
           display: 'grid',
@@ -514,10 +605,19 @@ export function CreateRequestPage() {
                 }
               </strong>
               . Your entries in other environments are kept as-is.{' '}
-              {marketCode
-                ? "New entries are checked against what's already whitelisted for this market/environment."
-                : 'Select a market above to also check new entries against what\'s already whitelisted.'}
+              {requestMode === 'DEWHITELIST'
+                ? marketCode
+                  ? "Pick from what's currently whitelisted for this market/environment below - only live resources can be selected."
+                  : 'Select a market above to see what can be de-whitelisted.'
+                : marketCode
+                  ? "New entries are checked against what's already whitelisted for this market/environment."
+                  : 'Select a market above to also check new entries against what\'s already whitelisted.'}
             </Alert>
+            {requestMode === 'WHITELIST' && (
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 1.5 }}>
+                <PolicyPreviewButton resources={resources[activeEnvironment]} />
+              </Box>
+            )}
             <Box
               sx={{
                 display: 'grid',
@@ -562,62 +662,123 @@ export function CreateRequestPage() {
                         {entries.length}
                       </Typography>
                     </Box>
-                    <Typography
-                      variant="caption"
-                      color={marketCode ? 'text.secondary' : 'warning.main'}
-                      display="block"
-                      sx={{ minHeight: 36 }}
-                    >
-                      {marketCode
-                        ? resourceType.helper
-                        : 'Select a market above before adding resources.'}
-                    </Typography>
-                    <Box sx={{ display: 'flex', gap: 1, mt: 1.25 }}>
-                      <TextField
-                        size="small"
-                        fullWidth
-                        disabled={!marketCode}
-                        placeholder={
-                          marketCode
-                            ? resourceType.placeholder
-                            : 'Select a market first'
-                        }
-                        value={drafts[resourceType.key]}
-                        error={Boolean(resourceErrors[resourceType.key])}
-                        onChange={(event) => {
-                          setDrafts((current) => ({
-                            ...current,
-                            [resourceType.key]: event.target.value,
-                          }));
-                          setResourceErrors((current) => ({
-                            ...current,
-                            [resourceType.key]: undefined,
-                          }));
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault();
-                            addResource(resourceType);
-                          }
-                        }}
-                      />
-                      <Button
-                        variant="outlined"
-                        disabled={!marketCode}
-                        onClick={() => addResource(resourceType)}
-                        startIcon={<AddIcon />}
-                      >
-                        Add
-                      </Button>
-                    </Box>
-                    {resourceErrors[resourceType.key] && (
-                      <Typography
-                        variant="caption"
-                        color="error"
-                        sx={{ mt: 0.75, display: 'block' }}
-                      >
-                        {resourceErrors[resourceType.key]}
-                      </Typography>
+                    {requestMode === 'DEWHITELIST' ? (
+                      (() => {
+                        const dewhitelistOptions = resourceOptionsForDewhitelist(
+                          resourceType.key
+                        );
+                        return (
+                          <>
+                            <Typography
+                              variant="caption"
+                              color={marketCode ? 'text.secondary' : 'warning.main'}
+                              display="block"
+                              sx={{ minHeight: 36 }}
+                            >
+                              {!marketCode
+                                ? 'Select a market above before de-whitelisting resources.'
+                                : dewhitelistOptions.length > 0
+                                  ? `Pick one currently whitelisted in ${activeEnvironment} to remove it.`
+                                  : `Nothing whitelisted in ${activeEnvironment} for this market yet.`}
+                            </Typography>
+                            <Box sx={{ mt: 1.25 }}>
+                              <Autocomplete
+                                size="small"
+                                fullWidth
+                                disabled={!marketCode || dewhitelistOptions.length === 0}
+                                options={dewhitelistOptions}
+                                value={null}
+                                inputValue={drafts[resourceType.key]}
+                                onInputChange={(_event, value) =>
+                                  setDrafts((current) => ({
+                                    ...current,
+                                    [resourceType.key]: value,
+                                  }))
+                                }
+                                onChange={(_event, value) => {
+                                  if (!value) return;
+                                  addExistingResource(resourceType.key, value);
+                                  setDrafts((current) => ({
+                                    ...current,
+                                    [resourceType.key]: '',
+                                  }));
+                                }}
+                                noOptionsText="Nothing whitelisted here yet"
+                                renderInput={(params) => (
+                                  <TextField
+                                    {...params}
+                                    placeholder={
+                                      marketCode
+                                        ? 'Select a whitelisted resource to remove'
+                                        : 'Select a market first'
+                                    }
+                                  />
+                                )}
+                              />
+                            </Box>
+                          </>
+                        );
+                      })()
+                    ) : (
+                      <>
+                        <Typography
+                          variant="caption"
+                          color={marketCode ? 'text.secondary' : 'warning.main'}
+                          display="block"
+                          sx={{ minHeight: 36 }}
+                        >
+                          {marketCode
+                            ? resourceType.helper
+                            : 'Select a market above before adding resources.'}
+                        </Typography>
+                        <Box sx={{ display: 'flex', gap: 1, mt: 1.25 }}>
+                          <TextField
+                            size="small"
+                            fullWidth
+                            disabled={!marketCode}
+                            placeholder={
+                              marketCode
+                                ? resourceType.placeholder
+                                : 'Select a market first'
+                            }
+                            value={drafts[resourceType.key]}
+                            error={Boolean(resourceErrors[resourceType.key])}
+                            onChange={(event) => {
+                              setDrafts((current) => ({
+                                ...current,
+                                [resourceType.key]: event.target.value,
+                              }));
+                              setResourceErrors((current) => ({
+                                ...current,
+                                [resourceType.key]: undefined,
+                              }));
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                addResource(resourceType);
+                              }
+                            }}
+                          />
+                          <Button
+                            variant="outlined"
+                            disabled={!marketCode}
+                            onClick={() => addResource(resourceType)}
+                            startIcon={<AddIcon />}
+                          >
+                            Add
+                          </Button>
+                        </Box>
+                        {resourceErrors[resourceType.key] && (
+                          <Typography
+                            variant="caption"
+                            color="error"
+                            sx={{ mt: 0.75, display: 'block' }}
+                          >
+                            {resourceErrors[resourceType.key]}
+                          </Typography>
+                        )}
+                      </>
                     )}
                     <Stack spacing={0.5} sx={{ mt: 1.25 }}>
                       {entries.map((entry) => (
@@ -752,12 +913,17 @@ export function CreateRequestPage() {
           <Button
             fullWidth
             variant="contained"
+            color={requestMode === 'DEWHITELIST' ? 'error' : 'primary'}
             size="large"
             onClick={() => void submit()}
             disabled={isSubmitting || totalResources === 0}
             startIcon={isSubmitting ? undefined : <CheckCircleOutlineIcon />}
           >
-            {isSubmitting ? 'Submitting request…' : 'Submit whitelist request'}
+            {isSubmitting
+              ? 'Submitting request…'
+              : requestMode === 'DEWHITELIST'
+                ? 'Submit de-whitelist request'
+                : 'Submit whitelist request'}
           </Button>
           <Typography
             variant="caption"

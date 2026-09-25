@@ -31,6 +31,10 @@ interface ImportMetaEnv {
   readonly VITE_AWS_ACCOUNT_ID_DEV: string;
   readonly VITE_AWS_ACCOUNT_ID_QA: string;
   readonly VITE_AWS_ACCOUNT_ID_PRD: string;
+  readonly VITE_POLICY_TEMPLATE_S3: string;
+  readonly VITE_POLICY_TEMPLATE_SECRETS: string;
+  readonly VITE_POLICY_TEMPLATE_KMS: string;
+  readonly VITE_POLICY_TEMPLATE_LAMBDA: string;
   readonly VITE_SHOW_INTEGRATION_DISCLAIMER: string;
   readonly VITE_INTEGRATION_DISCLAIMER_TEXT: string;
   readonly VITE_DOCUMENTATION_LINKS: string;

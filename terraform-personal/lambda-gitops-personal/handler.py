@@ -321,7 +321,15 @@ def handle_get_whitelist(event):
 # git-host-agnostic)
 # =====================================================
 
-def update_yaml_data(yaml_data, env_payload):
+def update_yaml_data(yaml_data, env_payload, request_type="WHITELIST"):
+    """request_type="DEWHITELIST" mirrors this exact function for
+    removal instead of addition - same SUPPORTED_SECTIONS, same
+    dedup-by-string-value comparison, same YAML sequence in place. A
+    de-whitelist request rides through the identical
+    branch/PR/review/promotion pipeline as a whitelist one (see
+    handle_create_pr) - only the diff this function produces differs."""
+
+    is_dewhitelist = str(request_type).upper() == "DEWHITELIST"
 
     for section in SUPPORTED_SECTIONS:
 
@@ -336,6 +344,36 @@ def update_yaml_data(yaml_data, env_payload):
         existing = {
             str(v) for v in yaml_data[section]
         }
+
+        if is_dewhitelist:
+
+            for value in values:
+
+                if value in existing:
+
+                    # Remove by string value, not index/identity - ruamel's
+                    # CommentedSeq supports list.remove() as a plain list
+                    # does, and comparing the scalar's str() form matches
+                    # how "existing" itself was built above.
+                    for i, item in enumerate(yaml_data[section]):
+                        if str(item) == value:
+                            del yaml_data[section][i]
+                            break
+
+                    existing.discard(value)
+
+                    print(
+                        f"Removed {value} "
+                        f"from {section}"
+                    )
+                else:
+
+                    print(
+                        f"{value} not currently "
+                        f"in {section} - nothing to remove"
+                    )
+
+            continue
 
         for value in values:
 
@@ -434,7 +472,8 @@ def process_yaml_updates(
 
         update_yaml_data(
             yaml_data,
-            env_payload
+            env_payload,
+            event.get("request_type", "WHITELIST")
         )
 
         stream = StringIO()
@@ -635,6 +674,51 @@ def create_pull_request(head_branch, base_branch=None, title=None, body=None):
     return pr
 
 # =====================================================
+# CLOSE PULL REQUEST / DELETE BRANCH (CANCEL action)
+# =====================================================
+
+def close_pull_request(pr_number):
+    url = (
+        f"{GITHUB_API_URL}/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+        f"/pulls/{pr_number}"
+    )
+    response = _request_with_retry(
+        "PATCH",
+        url,
+        operation=f"Close pull request {pr_number}",
+        headers={
+            **get_headers(),
+            "Content-Type": "application/json"
+        },
+        json={"state": "closed"},
+        timeout=30
+    )
+    check_response(response, f"Close pull request {pr_number}")
+
+
+def delete_branch(branch_name):
+    url = (
+        f"{GITHUB_API_URL}/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+        f"/git/refs/heads/{branch_name}"
+    )
+    response = _request_with_retry(
+        "DELETE",
+        url,
+        operation=f"Delete branch {branch_name}",
+        headers=get_headers(),
+        timeout=30
+    )
+    if response.status_code == 422 or response.status_code == 404:
+        # Branch never existed (request was CANCELLED before the initial
+        # CREATE_PR trigger ran, or a retried cancel), or was already
+        # deleted - GitHub returns 422 for a ref that doesn't exist and
+        # 404 for an unknown repo/ref path depending on the case; either
+        # way there's nothing left to do.
+        print(f"[IDEMPOTENT] Branch {branch_name} does not exist - skipping delete")
+        return
+    check_response(response, f"Delete branch {branch_name}")
+
+# =====================================================
 # NOTIFY APPROVERS (PR CREATED)
 # =====================================================
 def notify_approvers_pr_created(pr, payload):
@@ -769,8 +853,14 @@ def handle_create_pr(event):
         requested_by=payload.get("submitted_by")
     )
 
+    is_dewhitelist = str(payload.get("request_type", "WHITELIST")).upper() == "DEWHITELIST"
     pr = create_pull_request(
-        branch_name
+        branch_name,
+        title=(
+            f"[De-whitelist] GitOps Update {branch_name}"
+            if is_dewhitelist
+            else f"GitOps Update {branch_name}"
+        ),
     )
     pr_id = pr.get("number")
 
@@ -805,6 +895,44 @@ def handle_create_pr(event):
             "url": pr.get("html_url"),
         }
     }
+
+# =====================================================
+# CANCEL ACTION (best-effort branch/PR cleanup for a cancelled request)
+# =====================================================
+
+def handle_cancel(event):
+    """Best-effort cleanup for a request the requester cancelled before it
+    merged to dev (see the /dpc/requests/{id}/cancel handler in the main
+    Lambda, which already commits the CANCELLED status synchronously
+    regardless of what happens here). Closes the request's own PR into
+    dev if one was opened, then deletes its gitops/{request_id} branch.
+    Both steps are idempotent no-ops if the PR/branch never existed yet -
+    covers the case where CANCEL races ahead of a CREATE_PR that hasn't
+    run yet - so this is safe to call unconditionally."""
+    payload = event["payload"]
+    request_id = payload["request_id"]
+    branch_name = f"gitops/{request_id}"
+
+    closed_pr_number = None
+    try:
+        pr = _find_existing_pull_request(branch_name, SOURCE_BRANCH)
+    except requests.exceptions.HTTPError as error:
+        print(f"[CANCEL] Failed to look up open PR for {branch_name}: {error}")
+        pr = None
+
+    if pr:
+        close_pull_request(pr["number"])
+        closed_pr_number = pr["number"]
+
+    delete_branch(branch_name)
+
+    return {
+        "status": "SUCCESS",
+        "request_id": request_id,
+        "branch": branch_name,
+        "closed_pr": closed_pr_number,
+    }
+
 
 # =====================================================
 # PROMOTE ACTION (dev -> qa, qa -> master)
@@ -1214,6 +1342,17 @@ def lambda_handler(event, context):
         # failures (_report_failure/_mark_request_sync_failed) that don't
         # apply to a read with no request_id or DynamoDB item involved.
         return handle_get_whitelist(event)
+
+    if action == "CANCEL":
+        # Best-effort cleanup only - the main Lambda has already committed
+        # the request's CANCELLED status regardless of this call's outcome
+        # (see its /cancel handler), so a failure here is logged and
+        # reported but never allowed to look like the cancel itself failed.
+        try:
+            return handle_cancel(event)
+        except Exception as error:
+            print(f"[CANCEL] Branch/PR cleanup failed for {event.get('payload', {}).get('request_id')}: {error}")
+            return {"status": "ERROR", "message": str(error)}
 
     try:
         if action == "PROMOTE":
