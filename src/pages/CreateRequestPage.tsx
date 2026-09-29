@@ -133,7 +133,7 @@ const WHITELIST_FIELD: Record<
 
 export function CreateRequestPage() {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, accessStatus, canMutate, hasMarketAccess, hasEnvironmentAccess } = useAuth();
   const [activeEnvironment, setActiveEnvironment] =
     useState<EnvironmentKey>('DEV');
   // A whole submission is either an add or a remove - the backend's
@@ -209,6 +209,20 @@ export function CreateRequestPage() {
     };
   }, [marketCode, activeEnvironment]);
 
+  useEffect(() => {
+    if (!marketCode) return;
+    const stillVisible = environments.some(
+      (item) =>
+        item.key === activeEnvironment && hasEnvironmentAccess(marketCode, item.key)
+    );
+    if (stillVisible) return;
+    const fallback = environments.find((item) =>
+      hasEnvironmentAccess(marketCode, item.key)
+    );
+    if (fallback) setActiveEnvironment(fallback.key);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marketCode, hasEnvironmentAccess]);
+
   const isAlreadyWhitelisted = (resourceKey: ResourceKey, value: string) => {
     const data = whitelistCache[`${marketCode}:${activeEnvironment}`];
     if (!data || !data.exists) return false;
@@ -236,6 +250,16 @@ export function CreateRequestPage() {
   };
 
   const market = config.markets.find((item) => item.code === marketCode);
+  // Idea #19 (RBAC-Gated Create Request): only offer markets/environments
+  // this user actually has access to. Falls back to the unfiltered list
+  // while access is still loading or couldn't be determined - see
+  // AuthProvider's hasMarketAccess/hasEnvironmentAccess doc comments.
+  const visibleMarkets = config.markets.filter((item) =>
+    hasMarketAccess(item.code)
+  );
+  const visibleEnvironments = marketCode
+    ? environments.filter((item) => hasEnvironmentAccess(marketCode, item.key))
+    : environments;
   const totalResources = useMemo(
     () =>
       Object.values(resources)
@@ -361,6 +385,15 @@ export function CreateRequestPage() {
   };
 
   const submit = async () => {
+    if (!canMutate) {
+      setSnackbar({
+        open: true,
+        severity: 'error',
+        message:
+          'Your access permissions couldn\'t be verified, so request creation is disabled right now. Refresh the page to retry.',
+      });
+      return;
+    }
     if (!user?.id) {
       setSnackbar({
         open: true,
@@ -456,6 +489,19 @@ export function CreateRequestPage() {
           Stage AWS resources by environment, then submit one complete request.
         </Typography>
       </Box>
+      {accessStatus === 'error' && (
+        <Alert severity="warning" sx={{ mb: 2.5 }}>
+          Your access permissions couldn&apos;t be verified, so this page is read-only right
+          now - you can browse but not submit a request. Refresh to try again, or contact
+          support if this persists.
+        </Alert>
+      )}
+      {accessStatus === 'loaded' && visibleMarkets.length === 0 && (
+        <Alert severity="info" sx={{ mb: 2.5 }}>
+          You don&apos;t currently have access to request any market. Contact your admin if
+          this looks wrong.
+        </Alert>
+      )}
       <ToggleButtonGroup
         exclusive
         value={requestMode}
@@ -525,7 +571,7 @@ export function CreateRequestPage() {
                 value={marketCode}
                 onChange={(event) => setMarketCode(event.target.value)}
               >
-                {config.markets.map((item) => (
+                {visibleMarkets.map((item) => (
                   <MenuItem key={item.code} value={item.code}>
                     {item.code}
                   </MenuItem>
@@ -570,7 +616,7 @@ export function CreateRequestPage() {
               size="small"
               sx={{ mb: 1.5 }}
             >
-              {environments.map((environment) => (
+              {visibleEnvironments.map((environment) => (
                 <ToggleButton
                   key={environment.key}
                   value={environment.key}
@@ -916,7 +962,7 @@ export function CreateRequestPage() {
             color={requestMode === 'DEWHITELIST' ? 'error' : 'primary'}
             size="large"
             onClick={() => void submit()}
-            disabled={isSubmitting || totalResources === 0}
+            disabled={isSubmitting || totalResources === 0 || !canMutate}
             startIcon={isSubmitting ? undefined : <CheckCircleOutlineIcon />}
           >
             {isSubmitting

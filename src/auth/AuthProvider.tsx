@@ -10,7 +10,14 @@ import { useMsal } from '@azure/msal-react';
 import { InteractionStatus } from '@azure/msal-browser';
 import { loginRequest } from '@/config/authConfig';
 import { User, UserRole, AuthContextType } from '@/types/auth.types';
+import {
+  NormalizedAccess,
+  hasMarketAccess as hasMarketAccessUtil,
+  hasEnvironmentAccess as hasEnvironmentAccessUtil,
+} from '@/types/access.types';
+import { EnvironmentName } from '@/types/request.types';
 import { config } from '@/config';
+import { accessService } from '@/api/services';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -36,6 +43,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
       return false;
     }
   });
+
+  // Real, server-sourced RBAC (idea #19) - see src/types/access.types.ts
+  // and AuthContextType's own doc comment for the read-only fallback
+  // behavior on 'error'.
+  const [access, setAccess] = useState<NormalizedAccess | null>(null);
+  const [accessStatus, setAccessStatus] = useState<
+    'idle' | 'loading' | 'loaded' | 'error'
+  >('idle');
 
   // Safety timeout to prevent infinite loading
   useEffect(() => {
@@ -77,6 +92,46 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
   }, [accounts, inProgress]);
 
+  // Look up real RBAC access (idea #19) for the signed-in user's email
+  // once they're known. Runs once per distinct email - not on every
+  // AuthProvider re-render - and resets to 'idle' on sign-out so a
+  // subsequent sign-in (possibly as a different user) starts clean
+  // rather than reusing stale access data.
+  useEffect(() => {
+    const email = user?.email;
+    if (!email) {
+      setAccess(null);
+      setAccessStatus('idle');
+      return;
+    }
+
+    let cancelled = false;
+    setAccessStatus('loading');
+
+    void (async () => {
+      try {
+        const result = await accessService.getAccess(email);
+        if (!cancelled) {
+          setAccess(result);
+          setAccessStatus('loaded');
+        }
+      } catch (error) {
+        console.error(
+          `[AuthProvider] Failed to load RBAC access for ${email} - falling back to read-only:`,
+          error
+        );
+        if (!cancelled) {
+          setAccess(null);
+          setAccessStatus('error');
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.email]);
+
   // Login function using redirect
   const login = useCallback(async () => {
     try {
@@ -109,23 +164,28 @@ export function AuthProvider({ children }: AuthProviderProps) {
   // real Azure AD ADMIN app-role assignment until that's wired up.
   const hasRole = useCallback(
     (role: UserRole): boolean => {
-      if (role === UserRole.ADMIN && isAdminUnlocked) {
+      // A real admin role from the RBAC lambda (access.role === 'admin')
+      // now satisfies ADMIN checks the same way the manual unlock does -
+      // this is what lets RequestDetailsPage's existing hasRole(ADMIN)
+      // gates (recovery actions, PR links) pick up real Azure AD-backed
+      // admin status with no changes needed there.
+      if (role === UserRole.ADMIN && (isAdminUnlocked || access?.role === 'admin')) {
         return true;
       }
       return user?.roles.includes(role) || false;
     },
-    [user, isAdminUnlocked]
+    [user, isAdminUnlocked, access]
   );
 
   // Check if user has any of the specified roles
   const hasAnyRole = useCallback(
     (roles: UserRole[]): boolean => {
-      if (roles.includes(UserRole.ADMIN) && isAdminUnlocked) {
+      if (roles.includes(UserRole.ADMIN) && (isAdminUnlocked || access?.role === 'admin')) {
         return true;
       }
       return roles.some((role) => user?.roles.includes(role)) || false;
     },
-    [user, isAdminUnlocked]
+    [user, isAdminUnlocked, access]
   );
 
   // Unlock ADMIN-gated UI for this tab by matching the build-time
@@ -156,6 +216,32 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
   }, []);
 
+  // Mutations (create/cancel a request, de-whitelist, admin actions) are
+  // only allowed once real access data has actually loaded - not while
+  // it's still loading, and not on 'error' (see AuthContextType's doc
+  // comment: that's the "read-only" fallback).
+  const canMutate = accessStatus === 'loaded';
+
+  // Viewing is left unrestricted until access has positively loaded and
+  // said otherwise, so pages never flash an artificially-empty market
+  // list while the lookup is still in flight or has failed - only a
+  // *confirmed* 'loaded' result actually narrows what's shown.
+  const hasMarketAccess = useCallback(
+    (marketCode: string): boolean => {
+      if (accessStatus !== 'loaded') return true;
+      return hasMarketAccessUtil(access, marketCode);
+    },
+    [access, accessStatus]
+  );
+
+  const hasEnvironmentAccess = useCallback(
+    (marketCode: string, environment: EnvironmentName): boolean => {
+      if (accessStatus !== 'loaded') return true;
+      return hasEnvironmentAccessUtil(access, marketCode, environment);
+    },
+    [access, accessStatus]
+  );
+
   const value: AuthContextType = {
     isAuthenticated: !!user,
     user,
@@ -168,6 +254,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
     isAdminUnlocked,
     unlockAdminAccess,
     lockAdminAccess,
+    access,
+    accessStatus,
+    canMutate,
+    hasMarketAccess,
+    hasEnvironmentAccess,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

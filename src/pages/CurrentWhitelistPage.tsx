@@ -56,7 +56,7 @@ const MIN_JUSTIFICATION_LENGTH = 20;
 
 export function CurrentWhitelistPage() {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, accessStatus, canMutate, hasMarketAccess, hasEnvironmentAccess } = useAuth();
   // Market still requires an explicit choice - showing a default market on
   // load would read as "here's this market's whitelist" before the viewer
   // has chosen anything. Environment no longer needs a dropdown: once a
@@ -112,7 +112,23 @@ export function CurrentWhitelistPage() {
 
   const readyToShow = Boolean(marketCode);
   const market = config.markets.find((item) => item.code === marketCode);
+  // Idea #19 (RBAC-Gated Create Request) also covers viewing (idea #19's
+  // own description: viewing stays open but is scoped to markets/envs the
+  // user has access to) - falls back to the unfiltered list while access
+  // is still loading or couldn't be determined, same as Create Request.
+  const visibleMarkets = config.markets.filter((item) => hasMarketAccess(item.code));
+  const visibleEnvironments = marketCode
+    ? ENVIRONMENTS.filter((env) => hasEnvironmentAccess(marketCode, env))
+    : ENVIRONMENTS;
   const anyLoading = ENVIRONMENTS.some((env) => envState[env].loading);
+
+  useEffect(() => {
+    if (!marketCode) return;
+    if (visibleEnvironments.includes(activeTab)) return;
+    const fallback = visibleEnvironments[0];
+    if (fallback) setActiveTab(fallback);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [marketCode, visibleEnvironments]);
 
   const closeDewhitelistDialog = () => {
     if (dewhitelistSubmitting) return; // don't let a stray close interrupt an in-flight submit
@@ -123,6 +139,12 @@ export function CurrentWhitelistPage() {
 
   const handleSubmitDewhitelist = async () => {
     if (!dewhitelistTarget || !user) return;
+    if (!canMutate) {
+      setDewhitelistError(
+        "Your access permissions couldn't be verified, so de-whitelisting is disabled right now. Refresh the page to retry."
+      );
+      return;
+    }
     if (dewhitelistJustification.trim().length < MIN_JUSTIFICATION_LENGTH) {
       setDewhitelistError(`Add at least ${MIN_JUSTIFICATION_LENGTH} characters explaining why this should be removed.`);
       return;
@@ -168,6 +190,19 @@ export function CurrentWhitelistPage() {
         together as soon as you pick a market, so switching tabs below is instant.
       </Typography>
 
+      {accessStatus === 'error' && (
+        <Alert severity="warning" sx={{ mb: 3 }}>
+          Your access permissions couldn&apos;t be verified. Viewing stays available, but
+          de-whitelisting is disabled until this can be confirmed - refresh to try again, or
+          contact support if this persists.
+        </Alert>
+      )}
+      {accessStatus === 'loaded' && visibleMarkets.length === 0 && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          You don&apos;t currently have access to view any market. Contact your admin if this
+          looks wrong.
+        </Alert>
+      )}
       <Paper sx={{ p: 3, mb: 3 }}>
         <Box
           sx={{
@@ -188,7 +223,7 @@ export function CurrentWhitelistPage() {
             <MenuItem value="">
               <em>Select market</em>
             </MenuItem>
-            {config.markets.map((item) => (
+            {visibleMarkets.map((item) => (
               <MenuItem key={item.code} value={item.code}>
                 {item.code} — {item.name}
               </MenuItem>
@@ -215,7 +250,7 @@ export function CurrentWhitelistPage() {
             onChange={(_e, value: EnvName) => setActiveTab(value)}
             sx={{ mb: 2 }}
           >
-            {ENVIRONMENTS.map((env) => (
+            {visibleEnvironments.map((env) => (
               <Tab key={env} value={env} label={env} />
             ))}
           </Tabs>
@@ -225,6 +260,7 @@ export function CurrentWhitelistPage() {
             market={market}
             marketCode={marketCode}
             state={envState[activeTab]}
+            canMutate={canMutate}
             onRequestDewhitelist={(resourceType, value) =>
               setDewhitelistTarget({ env: activeTab, resourceType, value })
             }
@@ -307,12 +343,14 @@ function EnvironmentSection({
   market,
   marketCode,
   state,
+  canMutate,
   onRequestDewhitelist,
 }: {
   env: EnvName;
   market: { code: string; name: string } | undefined;
   marketCode: string;
   state: EnvState;
+  canMutate: boolean;
   onRequestDewhitelist: (resourceType: ResourceType, value: string) => void;
 }) {
   return (
@@ -425,13 +463,22 @@ function EnvironmentSection({
                                 <ContentCopyIcon fontSize="inherit" />
                               </IconButton>
                             </Tooltip>
-                            <Tooltip title="Request de-whitelisting">
-                              <IconButton
-                                size="small"
-                                onClick={() => onRequestDewhitelist(resourceType, value)}
-                              >
-                                <CloseIcon fontSize="inherit" />
-                              </IconButton>
+                            <Tooltip
+                              title={
+                                canMutate
+                                  ? 'Request de-whitelisting'
+                                  : "Read-only right now - your access couldn't be verified"
+                              }
+                            >
+                              <span>
+                                <IconButton
+                                  size="small"
+                                  disabled={!canMutate}
+                                  onClick={() => onRequestDewhitelist(resourceType, value)}
+                                >
+                                  <CloseIcon fontSize="inherit" />
+                                </IconButton>
+                              </span>
                             </Tooltip>
                           </Box>
                         </Box>
