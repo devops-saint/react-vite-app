@@ -126,6 +126,16 @@ resource "aws_iam_role_policy" "lambda" {
         Resource = aws_lambda_function.gitops.arn
       },
       {
+        # RBAC (idea #19) - invokes the org's separate Azure AD
+        # group-fetch Lambda (provisioned outside this repo) from
+        # GET /dpc/access. Same-account invoke (unlike idea #4's
+        # cross-account sts:AssumeRole), so a plain function-name-scoped
+        # ARN is enough.
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.azure_ad_group_fetch_lambda_name}"
+      },
+      {
         # Cross-account AWS-state verification (see the AWS-SIDE ACCESS
         # VERIFICATION comment block in handler.py). Each target account
         # (DEV/QA/PRD) must define a "dpc-portal-validator" role whose
@@ -179,6 +189,9 @@ resource "aws_lambda_function" "request_api" {
       DYNAMODB_TABLE     = aws_dynamodb_table.requests.name
       CORS_ALLOW_ORIGINS = jsonencode(var.cors_allow_origins)
       GITOPS_LAMBDA_NAME = aws_lambda_function.gitops.function_name
+      # RBAC (idea #19) - see the AZURE_AD_GROUP_FETCH_LAMBDA_NAME comment
+      # in handler.py and the variable's own description.
+      AZURE_AD_GROUP_FETCH_LAMBDA_NAME = var.azure_ad_group_fetch_lambda_name
       # No verified SES domain for personal testing - leave var.domain
       # unset. Every notify_* function no-ops on its own; nothing else
       # needs to change.
@@ -513,6 +526,12 @@ resource "aws_apigatewayv2_route" "cancel_request" {
 resource "aws_apigatewayv2_route" "get_whitelist" {
   api_id    = aws_apigatewayv2_api.requests.id
   route_key = "GET /dpc/whitelist/{market_code}/{environment}"
+  target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
+}
+
+resource "aws_apigatewayv2_route" "access" {
+  api_id    = aws_apigatewayv2_api.requests.id
+  route_key = "GET /dpc/access"
   target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
 }
 

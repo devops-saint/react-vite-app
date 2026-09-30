@@ -16,6 +16,13 @@ allowed_origins = set(json.loads(os.environ.get("CORS_ALLOW_ORIGINS", "[]")))
 
 lambda_client = boto3.client("lambda")
 gitops_lambda_name = os.environ.get("GITOPS_LAMBDA_NAME")
+# RBAC (idea #19) - a separate org Lambda (aws_lambda_function.azure_ad_group_fetch,
+# provisioned outside this repo) that GET /dpc/access invokes
+# synchronously with {"email": ...} to resolve a user's real role and
+# market/environment access from Azure AD group membership. Unset just
+# means GET /dpc/access returns 503 - the frontend already treats a
+# failed/unavailable access lookup as read-only, not a hard error.
+azure_ad_group_fetch_lambda_name = os.environ.get("AZURE_AD_GROUP_FETCH_LAMBDA_NAME")
 
 ses_client = boto3.client("ses")
 DOMAIN = os.environ.get("DOMAIN")
@@ -1270,6 +1277,57 @@ def handle_request(event):
             )
 
         return response(200, whitelist_payload, origin)
+
+    if method == "GET" and path == "/dpc/access":
+        # RBAC (idea #19): resolve the caller's real role and
+        # market/environment access by invoking the org's separate Azure
+        # AD group-fetch Lambda synchronously - triggered from the
+        # frontend right after login (see accessService.getAccess /
+        # AuthProvider.tsx). Mirrors the GET /dpc/whitelist/ pattern above
+        # (same-account RequestResponse invoke, not the cross-account
+        # sts:AssumeRole path idea #4 uses for AWS-state verification).
+        query = event.get("queryStringParameters") or {}
+        email = query.get("email")
+        if not email:
+            return response(400, {"message": "email is required"}, origin)
+        if not azure_ad_group_fetch_lambda_name:
+            return response(503, {"message": "Azure AD group fetch Lambda not configured"}, origin)
+
+        try:
+            invoke_result = lambda_client.invoke(
+                FunctionName=azure_ad_group_fetch_lambda_name,
+                InvocationType="RequestResponse",
+                Payload=json.dumps({"email": email}),
+            )
+            raw_payload = json.loads(invoke_result["Payload"].read())
+        except ClientError as error:
+            print(f"[ACCESS] Failed to invoke Azure AD group fetch lambda: {error}")
+            return response(502, {"message": "Failed to fetch access"}, origin)
+        except json.JSONDecodeError as error:
+            print(f"[ACCESS] Non-JSON response from Azure AD group fetch lambda: {error}")
+            return response(502, {"message": "Failed to fetch access"}, origin)
+
+        if invoke_result.get("FunctionError"):
+            print(f"[ACCESS] Azure AD group fetch lambda error: {raw_payload}")
+            return response(502, {"message": "Failed to fetch access"}, origin)
+
+        # azure_ad_group_fetch returns its own {"statusCode": ..., "body":
+        # "<json string>"} shape - a raw Lambda invoke response, not
+        # routed through API Gateway - so it has to be unwrapped the same
+        # way API Gateway itself would, rather than passed straight
+        # through to the frontend.
+        access_status = raw_payload.get("statusCode", 200)
+        try:
+            access_body = json.loads(raw_payload.get("body") or "{}")
+        except (json.JSONDecodeError, TypeError) as error:
+            print(f"[ACCESS] Malformed body from Azure AD group fetch lambda: {raw_payload} ({error})")
+            return response(502, {"message": "Malformed access response"}, origin)
+
+        if access_status != 200:
+            print(f"[ACCESS] Azure AD group fetch lambda returned {access_status}: {access_body}")
+            return response(502, {"message": "Failed to fetch access"}, origin)
+
+        return response(200, access_body, origin)
 
     if method == "POST" and path.startswith("/dpc/requests/") and path.endswith("/cancel"):
         request_id = event.get("pathParameters", {}).get("request_id")

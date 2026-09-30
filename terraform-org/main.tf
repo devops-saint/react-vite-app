@@ -259,9 +259,31 @@ resource "aws_iam_policy" "main_policy" {
         Action = [
           "lambda:InvokeFunction"
         ],
-        # FIX: was "*" (could invoke ANY Lambda in the account). This
-        # role only ever needs to invoke the gitops Lambda.
-        Resource = aws_lambda_function.gitops.arn
+        # Was "*" (could invoke ANY Lambda in the account) - scoped to the
+        # two Lambdas this role actually needs to invoke: the gitops
+        # Lambda, and the org's separate Azure AD group-fetch Lambda
+        # (aws_lambda_function.azure_ad_group_fetch, provisioned outside
+        # this repo) that GET /access invokes for RBAC (idea #19).
+        Resource = [
+          aws_lambda_function.gitops.arn,
+          "arn:aws:lambda:${data.aws_region.current.name}:${var.account_id}:function:${var.azure_ad_group_fetch_lambda_name}"
+        ]
+      },
+      {
+        # Cross-account AWS-state verification (idea #4 - see the
+        # AWS-SIDE ACCESS VERIFICATION comment block in handler.py).
+        # Backported from terraform/ and terraform-personal/, which
+        # already had this - this stack shares the same handler.py.
+        # Each target account (DEV/QA/PRD) must define a
+        # "dpc-portal-validator" role whose trust policy allows this role
+        # to assume it - that provisioning happens outside this repo, in
+        # each target account. Scoped to the convention name rather than
+        # a wildcard "*" resource, but still account-agnostic since the
+        # actual gate is each target account's own trust policy on that
+        # role.
+        Effect   = "Allow",
+        Action   = ["sts:AssumeRole"],
+        Resource = ["arn:aws:iam::*:role/dpc-portal-validator"]
       }
     ]
   })
@@ -349,6 +371,22 @@ resource "aws_lambda_function" "main" {
     variables = {
 
       DYNAMODB_TABLE                          = aws_dynamodb_table.requests.name
+      # RBAC (idea #19) - see GET /access in handler.py and the
+      # variable's own description.
+      AZURE_AD_GROUP_FETCH_LAMBDA_NAME        = var.azure_ad_group_fetch_lambda_name
+      # AWS-side access verification (idea #4) - see handler.py's
+      # AWS-SIDE ACCESS VERIFICATION block. Per-env target account id
+      # (mirrors VITE_AWS_ACCOUNT_ID_* on the frontend) and per-env
+      # cross-account validation role ARN this Lambda assumes to read the
+      # agent role's real IAM policy. Empty/unset for an env just means
+      # requests targeting it stay PENDING_AWS_VERIFICATION until it's
+      # configured.
+      AWS_ACCOUNT_ID_DEV                       = var.aws_account_id_dev
+      AWS_ACCOUNT_ID_QA                        = var.aws_account_id_qa
+      AWS_ACCOUNT_ID_PRD                       = var.aws_account_id_prd
+      AWS_VALIDATION_ROLE_ARN_DEV               = var.aws_validation_role_arn_dev
+      AWS_VALIDATION_ROLE_ARN_QA                = var.aws_validation_role_arn_qa
+      AWS_VALIDATION_ROLE_ARN_PRD               = var.aws_validation_role_arn_prd
       # FIX: was a hardcoded "${var.project_name}-gitops" string,
       # duplicating aws_lambda_function.gitops's own name construction.
       # Referencing the resource directly means it can never drift out of
@@ -530,6 +568,12 @@ resource "aws_apigatewayv2_route" "get_whitelist" {
   target    = "integrations/${aws_apigatewayv2_integration.main.id}"
 }
 
+resource "aws_apigatewayv2_route" "access" {
+  api_id    = aws_apigatewayv2_api.portal.id
+  route_key = "GET /access"
+  target    = "integrations/${aws_apigatewayv2_integration.main.id}"
+}
+
 resource "aws_apigatewayv2_stage" "dpc_ssp" {
   api_id      = aws_apigatewayv2_api.portal.id
   name        = "dpc"
@@ -606,4 +650,31 @@ resource "aws_lambda_permission" "eventbridge_sweep" {
   function_name = aws_lambda_function.gitops.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.gitops_sweep.arn
+}
+
+# Periodically checks every PENDING_AWS_VERIFICATION request's real AWS
+# IAM state and flips it to COMPLETED once confirmed (idea #4) - see
+# handle_validation_sweep and the AWS-SIDE ACCESS VERIFICATION comment
+# block in handler.py. Backported from terraform/ and terraform-personal/.
+resource "aws_cloudwatch_event_rule" "aws_verification_sweep" {
+  name                = "${var.project_name}-aws-verification-sweep"
+  description         = "Checks PENDING_AWS_VERIFICATION requests against the live agent-role IAM policy and completes them once confirmed"
+  schedule_expression = var.verification_sweep_schedule_expression
+  tags                = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "aws_verification_sweep" {
+  rule = aws_cloudwatch_event_rule.aws_verification_sweep.name
+  arn  = aws_lambda_function.main.arn
+  input = jsonencode({
+    action = "VALIDATE_SWEEP"
+  })
+}
+
+resource "aws_lambda_permission" "eventbridge_verification_sweep" {
+  statement_id  = "AllowEventBridgeVerificationSweepInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.main.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.aws_verification_sweep.arn
 }

@@ -141,3 +141,10 @@ variable "enable_gitops_dlq" {
   type        = bool
   default     = true
 }
+
+
+variable "azure_ad_group_fetch_lambda_name" {
+  description = "Function name of the org's separate Azure AD group/RBAC-fetch Lambda (aws_lambda_function.azure_ad_group_fetch, provisioned outside this repo) - GET /dpc/access invokes it synchronously with {\"email\": ...} to resolve a user's real role and market/environment access. Must be a plain function name (this Lambda's own execution role is granted lambda:InvokeFunction scoped to that name in the same account/region - see aws_iam_role_policy.lambda). Empty makes GET /dpc/access return 503 rather than fail silently."
+  type        = string
+  default     = "azure_ad_group_fetch"
+}

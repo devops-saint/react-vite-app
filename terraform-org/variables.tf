@@ -105,3 +105,56 @@ variable "market_lock_stale_seconds" {
   type        = number
   default     = 86400
 }
+
+variable "azure_ad_group_fetch_lambda_name" {
+  description = "Function name of the org's separate Azure AD group/RBAC-fetch Lambda (aws_lambda_function.azure_ad_group_fetch, provisioned outside this repo) - GET /access invokes it synchronously with {\"email\": ...} to resolve a user's real role and market/environment access. Must be a plain function name (aws_lambda_function.main's role is granted lambda:InvokeFunction scoped to that name in the same account/region - see aws_iam_policy.main_policy). Empty makes GET /access return 503 rather than fail silently."
+  type        = string
+  default     = "azure_ad_group_fetch"
+}
+
+# --- AWS-side access verification (idea #4) - see the AWS-SIDE ACCESS
+# VERIFICATION comment block in handler.py. Backported from terraform/
+# and terraform-personal/, since this stack shares the same handler.py
+# but hadn't had this infra added yet.
+
+variable "verification_sweep_schedule_expression" {
+  description = "EventBridge schedule for the AWS-side access verification sweep (handle_validation_sweep), which confirms PENDING_AWS_VERIFICATION requests against the real agent-role IAM policy before marking them COMPLETED."
+  type        = string
+  default     = "rate(10 minutes)"
+}
+
+variable "aws_account_id_dev" {
+  description = "AWS account id for the DEV agent role, used to build its cross-account IAM role ARN for AWS-side access verification. Mirrors VITE_AWS_ACCOUNT_ID_DEV on the frontend. Empty disables verification for DEV."
+  type        = string
+  default     = ""
+}
+
+variable "aws_account_id_qa" {
+  description = "Same as aws_account_id_dev, for QA."
+  type        = string
+  default     = ""
+}
+
+variable "aws_account_id_prd" {
+  description = "Same as aws_account_id_dev, for PRD."
+  type        = string
+  default     = ""
+}
+
+variable "aws_validation_role_arn_dev" {
+  description = "ARN of the DEV account's dpc-portal-validator role (see the AWS-SIDE ACCESS VERIFICATION comment block in handler.py for the cross-account trust convention). Empty disables verification for DEV."
+  type        = string
+  default     = ""
+}
+
+variable "aws_validation_role_arn_qa" {
+  description = "Same as aws_validation_role_arn_dev, for QA."
+  type        = string
+  default     = ""
+}
+
+variable "aws_validation_role_arn_prd" {
+  description = "Same as aws_validation_role_arn_dev, for PRD."
+  type        = string
+  default     = ""
+}
