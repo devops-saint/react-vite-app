@@ -21,8 +21,27 @@ function getInitials(name: string) {
     .slice(0, 2);
 }
 
+/** Label + Chip color for the RBAC-derived role (idea #19), distinct from
+ * the Azure AD app-role claims shown in the "Azure AD App Roles" section
+ * below - this reflects what GET /access actually returned for this user,
+ * not a token claim. */
+function rbacRoleDisplay(
+  access: ReturnType<typeof useAuth>['access'],
+  accessStatus: ReturnType<typeof useAuth>['accessStatus']
+): { label: string; color: 'primary' | 'default' | 'warning' } {
+  if (accessStatus === 'loading' || accessStatus === 'idle') {
+    return { label: 'Checking access…', color: 'default' };
+  }
+  if (accessStatus === 'error') {
+    return { label: 'Access unknown', color: 'warning' };
+  }
+  return access?.role === 'admin'
+    ? { label: 'Admin', color: 'primary' }
+    : { label: 'User', color: 'default' };
+}
+
 export function ProfilePage() {
-  const { user } = useAuth();
+  const { user, access, accessStatus } = useAuth();
 
   return (
     <Container maxWidth="md" sx={{ py: 4 }}>
@@ -54,7 +73,14 @@ export function ProfilePage() {
             {user ? getInitials(user.name) : 'U'}
           </Avatar>
           <Box>
-            <Typography variant="h6">{user?.name || '—'}</Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="h6">{user?.name || '—'}</Typography>
+              <Chip
+                label={rbacRoleDisplay(access, accessStatus).label}
+                color={rbacRoleDisplay(access, accessStatus).color}
+                size="small"
+              />
+            </Box>
             <Typography variant="body2" color="text.secondary">
               {user?.email || '—'}
             </Typography>
@@ -92,7 +118,7 @@ export function ProfilePage() {
           )}
           <Grid item xs={12}>
             <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
-              Roles
+              Azure AD App Roles
             </Typography>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               {user?.roles && user.roles.length > 0 ? (

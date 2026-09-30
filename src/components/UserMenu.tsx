@@ -8,7 +8,6 @@ import {
   Divider,
   Typography,
   Box,
-  Chip,
 } from '@mui/material';
 import PersonIcon from '@mui/icons-material/Person';
 import SettingsIcon from '@mui/icons-material/Settings';
@@ -18,7 +17,7 @@ import { useNavigate } from 'react-router-dom';
 import { config } from '@/config';
 
 export function UserMenu() {
-  const { user, logout, isAdminUnlocked } = useAuth();
+  const { user, logout, access, accessStatus } = useAuth();
   const navigate = useNavigate();
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const open = Boolean(anchorEl);
@@ -60,26 +59,50 @@ export function UserMenu() {
       .slice(0, 2);
   };
 
+  // Small role label shown under the avatar in the header (below the name
+  // shortform), reflecting the RBAC lookup (GET /access, idea #19) - not
+  // the Azure AD app-role claims shown on the Profile page's "Azure AD App
+  // Roles" list, which is a separate, older signal. Kept short/quiet since
+  // this is just an at-a-glance label, not a security boundary in itself.
+  const rbacRoleLabel =
+    accessStatus === 'loaded' ? (access?.role === 'admin' ? 'Admin' : 'User') : null;
+
   return (
     <>
-      <IconButton
-        onClick={handleClick}
-        size="small"
-        aria-controls={open ? 'user-menu' : undefined}
-        aria-haspopup="true"
-        aria-expanded={open ? 'true' : undefined}
-      >
-        <Avatar
-          sx={{
-            width: 32,
-            height: 32,
-            bgcolor: 'secondary.main',
-            fontSize: '0.875rem',
-          }}
+      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        <IconButton
+          onClick={handleClick}
+          size="small"
+          aria-controls={open ? 'user-menu' : undefined}
+          aria-haspopup="true"
+          aria-expanded={open ? 'true' : undefined}
         >
-          {user ? getInitials(user.name) : 'U'}
-        </Avatar>
-      </IconButton>
+          <Avatar
+            sx={{
+              width: 32,
+              height: 32,
+              bgcolor: 'secondary.main',
+              fontSize: '0.875rem',
+            }}
+          >
+            {user ? getInitials(user.name) : 'U'}
+          </Avatar>
+        </IconButton>
+        {rbacRoleLabel && (
+          <Typography
+            variant="caption"
+            sx={{
+              lineHeight: 1,
+              mt: 0.25,
+              color: 'inherit',
+              opacity: 0.85,
+              fontSize: '0.65rem',
+            }}
+          >
+            {rbacRoleLabel}
+          </Typography>
+        )}
+      </Box>
 
       <Menu
         anchorEl={anchorEl}
@@ -104,18 +127,6 @@ export function UserMenu() {
           <Typography variant="caption" color="text.secondary">
             {user?.email}
           </Typography>
-          {/* Temporary stand-in for a real Azure AD ADMIN app-role - see
-              config.adminAccessCode / SettingsPage. Shown here so it's
-              obvious app-wide when this convenience unlock is active,
-              since it's easy to forget after unlocking it once. */}
-          {isAdminUnlocked && (
-            <Chip
-              label="Temporary Admin"
-              color="warning"
-              size="small"
-              sx={{ mt: 1 }}
-            />
-          )}
         </Box>
 
         <Divider />
