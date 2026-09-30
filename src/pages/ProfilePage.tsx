@@ -7,7 +7,6 @@ import {
   Avatar,
   Chip,
   Grid,
-  Stack,
 } from '@mui/material';
 import PersonIcon from '@mui/icons-material/Person';
 import { useAuth } from '@/auth';
@@ -21,10 +20,9 @@ function getInitials(name: string) {
     .slice(0, 2);
 }
 
-/** Label + Chip color for the RBAC-derived role (idea #19), distinct from
- * the Azure AD app-role claims shown in the "Azure AD App Roles" section
- * below - this reflects what GET /access actually returned for this user,
- * not a token claim. */
+/** Label + Chip color for the RBAC-derived role (idea #19) - reflects
+ * what GET /access actually returned for this user (via AuthProvider's
+ * access/accessStatus), not an Azure AD token claim. */
 function rbacRoleDisplay(
   access: ReturnType<typeof useAuth>['access'],
   accessStatus: ReturnType<typeof useAuth>['accessStatus']
@@ -116,22 +114,6 @@ export function ProfilePage() {
               <Typography variant="body1">{user.jobTitle}</Typography>
             </Grid>
           )}
-          <Grid item xs={12}>
-            <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
-              Azure AD App Roles
-            </Typography>
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-              {user?.roles && user.roles.length > 0 ? (
-                user.roles.map((role) => (
-                  <Chip key={role} label={role} size="small" color="primary" variant="outlined" />
-                ))
-              ) : (
-                <Typography variant="body2" color="text.secondary">
-                  No roles assigned
-                </Typography>
-              )}
-            </Stack>
-          </Grid>
         </Grid>
       </Paper>
     </Container>
