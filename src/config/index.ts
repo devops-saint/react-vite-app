@@ -55,6 +55,58 @@ function parseDocumentationLinks(raw: string | undefined): DocumentationLink[] {
 }
 
 
+export interface KnowledgeLink {
+  title: string;
+  url: string;
+  // Extra words the troubleshooting search should match this page on
+  // (synonyms, error text, product names) - the page's own content can't be
+  // read from the browser (Confluence needs auth and doesn't allow
+  // cross-origin reads), so title + keywords + summary are all it has.
+  keywords: string;
+  summary: string;
+}
+
+// Parses "Title|URL|keywords|summary;Title|URL|keywords|summary;..."
+// (VITE_TROUBLESHOOTING_CONFLUENCE_PAGES / _INTERNAL_DOCS / _MATILLION_DOCS)
+// into KnowledgeLink[]. Entries are split on ";" and fields on "|" because
+// URLs and titles routinely contain "," and ":". Only title and URL are
+// required; keywords and summary are optional. Entries whose URL isn't
+// http(s) are dropped - these values end up in href attributes.
+function parseKnowledgeLinks(raw: string | undefined): KnowledgeLink[] {
+  if (!raw || !raw.trim()) {
+    return [];
+  }
+
+  return raw
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [title = '', url = '', keywords = '', ...summaryParts] = entry
+        .split('|')
+        .map((part) => part.trim());
+      return { title, url, keywords, summary: summaryParts.join('|').trim() };
+    })
+    .filter((link) => link.title && /^https?:\/\//i.test(link.url));
+}
+
+function httpUrlOrEmpty(raw: string | undefined): string {
+  const value = (raw || '').trim();
+  return /^https?:\/\//i.test(value) ? value : '';
+}
+
+// Used when VITE_TROUBLESHOOTING_MATILLION_DOCS is unset - just the public
+// docs home, since deep links vary by product/version and are better
+// supplied per-org through the env var.
+const DEFAULT_MATILLION_DOCS: KnowledgeLink[] = [
+  {
+    title: 'Matillion Documentation',
+    url: 'https://docs.matillion.com',
+    keywords: 'matillion agent pipeline designer data productivity cloud hub connection',
+    summary: 'Official Matillion product documentation.',
+  },
+];
+
 // Parses "CODE:Name,CODE:Name,..." (VITE_AVAILABLE_MARKETS) into MarketOption[].
 // Falls back to DEFAULT_MARKETS when the env var is unset, empty, or unparseable.
 function parseMarkets(raw: string | undefined): MarketOption[] {
@@ -141,6 +193,23 @@ export const config = {
     enableDevtools: import.meta.env.VITE_ENABLE_DEVTOOLS === 'true',
   },
 
+  // Troubleshooting page (self-service issue search) - see
+  // TroubleshootingPage. Each list uses the format described at
+  // parseKnowledgeLinks. Built-in portal articles are always searched in
+  // addition to anything configured here.
+  troubleshooting: {
+    confluencePages: parseKnowledgeLinks(import.meta.env.VITE_TROUBLESHOOTING_CONFLUENCE_PAGES),
+    internalDocs: parseKnowledgeLinks(import.meta.env.VITE_TROUBLESHOOTING_INTERNAL_DOCS),
+    matillionDocs: (() => {
+      const configured = parseKnowledgeLinks(import.meta.env.VITE_TROUBLESHOOTING_MATILLION_DOCS);
+      return configured.length > 0 ? configured : DEFAULT_MATILLION_DOCS;
+    })(),
+    // Where "this didn't solve it" sends people to raise a ticket. Empty
+    // hides the button rather than rendering a dead link.
+    supportTicketUrl: httpUrlOrEmpty(import.meta.env.VITE_SUPPORT_TICKET_URL),
+    supportTicketLabel: import.meta.env.VITE_SUPPORT_TICKET_LABEL || 'Support ticket portal',
+  },
+
   // Available Markets (comma-separated "CODE:Name" pairs in VITE_AVAILABLE_MARKETS)
   markets: parseMarkets(import.meta.env.VITE_AVAILABLE_MARKETS),
 
@@ -173,6 +242,9 @@ export const config = {
     profile: import.meta.env.VITE_ROUTE_PROFILE || '/profile',
     settings: import.meta.env.VITE_ROUTE_SETTINGS || '/settings',
     whitelist: import.meta.env.VITE_ROUTE_WHITELIST || '/whitelist',
+    troubleshoot: import.meta.env.VITE_ROUTE_TROUBLESHOOT || '/troubleshoot',
+    qna: import.meta.env.VITE_ROUTE_QNA || '/qna',
+    qnaDetails: import.meta.env.VITE_ROUTE_QNA_DETAILS || '/qna/:id',
   },
 } as const;
 
@@ -183,6 +255,10 @@ export const config = {
  */
 export const buildRequestDetailsPath = (requestId: string): string =>
   config.routes.requestDetails.replace(':id', requestId);
+
+/** Builds the Q&A thread route, e.g. buildQnaDetailsPath('abc') -> '/qna/abc'. */
+export const buildQnaDetailsPath = (questionId: string): string =>
+  config.routes.qnaDetails.replace(':id', encodeURIComponent(questionId));
 
 /**
  * Builds the Matillion agent IAM role ARN a client needs to configure

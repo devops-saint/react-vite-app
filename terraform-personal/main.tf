@@ -192,6 +192,14 @@ resource "aws_lambda_function" "request_api" {
       # RBAC (idea #19) - see the AZURE_AD_GROUP_FETCH_LAMBDA_NAME comment
       # in handler.py and the variable's own description.
       AZURE_AD_GROUP_FETCH_LAMBDA_NAME = var.azure_ad_group_fetch_lambda_name
+      # Q&A forum (idea #15): who to email on a new question, and the
+      # frontend URL used for the thread link in that email.
+      QNA_ADMIN_EMAILS = join(",", var.qna_admin_emails)
+      # Real portal admins: var.portal_admin_emails PLUS var.pr_approver_emails
+      # (approvers are always admins). An Azure AD admin not listed in either
+      # is reported to the portal as role "developer".
+      PORTAL_ADMIN_EMAILS = join(",", distinct(concat(var.portal_admin_emails, var.pr_approver_emails)))
+      PORTAL_BASE_URL  = var.portal_base_url != "" ? var.portal_base_url : try(var.cors_allow_origins[0], "")
       # No verified SES domain for personal testing - leave var.domain
       # unset. Every notify_* function no-ops on its own; nothing else
       # needs to change.
@@ -532,6 +540,30 @@ resource "aws_apigatewayv2_route" "get_whitelist" {
 resource "aws_apigatewayv2_route" "access" {
   api_id    = aws_apigatewayv2_api.requests.id
   route_key = "GET /dpc/access"
+  target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
+}
+
+resource "aws_apigatewayv2_route" "qna_list" {
+  api_id    = aws_apigatewayv2_api.requests.id
+  route_key = "GET /dpc/qna"
+  target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
+}
+
+resource "aws_apigatewayv2_route" "qna_create" {
+  api_id    = aws_apigatewayv2_api.requests.id
+  route_key = "POST /dpc/qna"
+  target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
+}
+
+resource "aws_apigatewayv2_route" "qna_get" {
+  api_id    = aws_apigatewayv2_api.requests.id
+  route_key = "GET /dpc/qna/{question_id}"
+  target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
+}
+
+resource "aws_apigatewayv2_route" "qna_comment" {
+  api_id    = aws_apigatewayv2_api.requests.id
+  route_key = "POST /dpc/qna/{question_id}/comments"
   target    = "integrations/${aws_apigatewayv2_integration.request_api.id}"
 }
 

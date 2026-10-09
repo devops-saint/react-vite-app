@@ -14,6 +14,8 @@ const routeNameMap: Record<string, string> = {
   users: 'Users',
   settings: 'Settings',
   profile: 'Profile',
+  qna: 'Q&A',
+  troubleshoot: 'Troubleshooting',
 };
 
 export function Breadcrumbs() {

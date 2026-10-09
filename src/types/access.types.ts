@@ -7,6 +7,10 @@ import { EnvironmentName } from './request.types';
  * roles - confirmed from real examples:
  *
  *   admin: { "role": "admin", "markets": ["ALL"], "environments": ["ALL"] }
+ *   developer: same shape as admin, with "role": "developer". The backend
+ *     reports this for someone the Azure AD group-fetch Lambda calls an admin
+ *     but who isn't on the portal's admin allow-list (PORTAL_ADMIN_EMAILS):
+ *     every market and environment, none of the admin-only actions.
  *   user:  { "role": "user", "markets": { "UY": ["DEV", "PRD", "QAS"] } }
  *
  * Notably: admin's markets/environments are single-element ["ALL"]
@@ -17,7 +21,7 @@ import { EnvironmentName } from './request.types';
  * that into one consistent shape the rest of the app can use.
  */
 export interface NormalizedAccess {
-  role: 'admin' | 'user';
+  role: 'admin' | 'developer' | 'user';
   // 'ALL' = unrestricted access to every market and environment.
   // Otherwise: exactly which environments this user may act on, per
   // market code (market codes are stored upper-cased; compare
@@ -70,6 +74,10 @@ export function normalizeAccess(raw: unknown): NormalizedAccess {
 
   if (obj['role'] === 'admin') {
     return { role: 'admin', markets: 'ALL' };
+  }
+
+  if (obj['role'] === 'developer') {
+    return { role: 'developer', markets: 'ALL' };
   }
 
   if (obj['role'] === 'user') {

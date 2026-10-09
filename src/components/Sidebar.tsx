@@ -17,6 +17,8 @@ import AddIcon from '@mui/icons-material/Add';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import Inventory2Icon from '@mui/icons-material/Inventory2';
+import BuildCircleOutlinedIcon from '@mui/icons-material/BuildCircleOutlined';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import { config } from '@/config';
 
 const DRAWER_WIDTH = 260;
@@ -35,6 +37,9 @@ interface MenuItem {
   title: string;
   icon: React.ReactNode;
   path: string;
+  // Also highlight for nested routes (e.g. /qna/<id>). Off by default: "My
+  // Requests" (/requests) must NOT light up on /requests/create.
+  matchNested?: boolean;
 }
 
 const menuItems: MenuItem[] = [
@@ -59,6 +64,17 @@ const menuItems: MenuItem[] = [
     path: config.routes.whitelist,
   },
   {
+    title: 'Troubleshoot',
+    icon: <BuildCircleOutlinedIcon />,
+    path: config.routes.troubleshoot,
+  },
+  {
+    title: 'Q&A',
+    icon: <ForumOutlinedIcon />,
+    path: config.routes.qna,
+    matchNested: true,
+  },
+  {
     title: 'Help',
     icon: <HelpOutlineIcon />,
     path: config.routes.help,
@@ -79,14 +95,17 @@ export function Sidebar({ open, onClose }: SidebarProps) {
     navigate(path);
   };
 
-  const isActive = (path: string) => {
-    return location.pathname === path;
+  const isActive = (item: MenuItem) => {
+    return (
+      location.pathname === item.path ||
+      (Boolean(item.matchNested) && location.pathname.startsWith(`${item.path}/`))
+    );
   };
 
   const renderMenuList = (showLabels: boolean) => (
     <List>
       {menuItems.map((item) => {
-        const active = isActive(item.path);
+        const active = isActive(item);
         const button = (
           <ListItemButton
             selected={active}

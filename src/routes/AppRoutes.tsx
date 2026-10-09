@@ -15,6 +15,9 @@ const HelpPage = lazy(() => import('@/pages/HelpPage').then(m => ({ default: m.H
 const ProfilePage = lazy(() => import('@/pages/ProfilePage').then(m => ({ default: m.ProfilePage })));
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
 const CurrentWhitelistPage = lazy(() => import('@/pages/CurrentWhitelistPage').then(m => ({ default: m.CurrentWhitelistPage })));
+const TroubleshootingPage = lazy(() => import('@/pages/TroubleshootingPage').then(m => ({ default: m.TroubleshootingPage })));
+const QnaPage = lazy(() => import('@/pages/QnaPage').then(m => ({ default: m.QnaPage })));
+const QnaDetailPage = lazy(() => import('@/pages/QnaDetailPage').then(m => ({ default: m.QnaDetailPage })));
 const NotFoundPage = lazy(() => import('@/pages/NotFoundPage').then(m => ({ default: m.NotFoundPage })));
 
 function AppRoutes() {
@@ -51,6 +54,11 @@ function AppRoutes() {
           <Route path={config.routes.requestsCreate} element={<CreateRequestPage />} />
           <Route path={config.routes.requests} element={<MyRequestsPage />} />
           <Route path={config.routes.requestDetails} element={<RequestDetailsPage />} />
+
+          {/* Self-service support */}
+          <Route path={config.routes.troubleshoot} element={<TroubleshootingPage />} />
+          <Route path={config.routes.qna} element={<QnaPage />} />
+          <Route path={config.routes.qnaDetails} element={<QnaDetailPage />} />
 
           {/* Help */}
           <Route path={config.routes.help} element={<HelpPage />} />

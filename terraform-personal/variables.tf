@@ -148,3 +148,30 @@ variable "azure_ad_group_fetch_lambda_name" {
   type        = string
   default     = "azure_ad_group_fetch"
 }
+
+# --- Q&A forum (idea #15) ---------------------------------------------------
+
+variable "qna_admin_emails" {
+  description = "Email addresses notified (via SES, from noreply@<domain>) whenever someone asks a new question in the portal's Q&A forum, so an admin can respond. Also treated as admins when answering, as a fallback if the Azure AD group-fetch Lambda is unavailable. Empty (the default) means nobody is emailed - questions are still stored and answerable."
+  type        = list(string)
+  default     = []
+}
+
+variable "portal_base_url" {
+  description = "Frontend base URL (e.g. https://portal.example.com), used only to put a direct link to the Q&A thread in notification emails. Leave empty to fall back to the first CORS-allowed origin / the CloudFront domain."
+  type        = string
+  default     = ""
+}
+
+# --- Portal admin allow-list (RBAC) ------------------------------------------
+
+variable "portal_admin_emails" {
+  description = "Email addresses of the people who are real portal admins. The Azure AD group-fetch Lambda reports everyone in the tool's admin group as role \"admin\", which also includes developers doing migration work; an AD admin whose email is NOT in this list is reported to the portal as role \"developer\" instead (access to every market and environment like an admin, but none of the admin-only actions: release market lock, retry promotion, PR links, and answering Q&A as an admin). Matching is case-insensitive. Everyone in var.pr_approver_emails is ALSO treated as a portal admin; this list is for additional admins who are not PR approvers. LEAVE BOTH LISTS EMPTY ONLY IF YOU WANT THE OLD BEHAVIOUR: if portal_admin_emails and pr_approver_emails are both empty the check is disabled and every Azure AD admin stays an admin."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for email in var.portal_admin_emails : can(regex("^[^@\\s,]+@[^@\\s,]+$", email))])
+    error_message = "Every portal_admin_emails entry must look like an email address (no spaces or commas)."
+  }
+}

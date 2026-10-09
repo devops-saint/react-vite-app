@@ -9,3 +9,6 @@ export { HelpPage } from './HelpPage';
 export { ProfilePage } from './ProfilePage';
 export { SettingsPage } from './SettingsPage';
 export { CurrentWhitelistPage } from './CurrentWhitelistPage';
+export { TroubleshootingPage } from './TroubleshootingPage';
+export { QnaPage } from './QnaPage';
+export { QnaDetailPage } from './QnaDetailPage';

@@ -24,6 +24,14 @@ interface ImportMetaEnv {
   readonly VITE_ROUTE_PROFILE: string;
   readonly VITE_ROUTE_SETTINGS: string;
   readonly VITE_ROUTE_WHITELIST: string;
+  readonly VITE_ROUTE_TROUBLESHOOT: string;
+  readonly VITE_ROUTE_QNA: string;
+  readonly VITE_ROUTE_QNA_DETAILS: string;
+  readonly VITE_TROUBLESHOOTING_CONFLUENCE_PAGES: string;
+  readonly VITE_TROUBLESHOOTING_INTERNAL_DOCS: string;
+  readonly VITE_TROUBLESHOOTING_MATILLION_DOCS: string;
+  readonly VITE_SUPPORT_TICKET_URL: string;
+  readonly VITE_SUPPORT_TICKET_LABEL: string;
   readonly VITE_AVAILABLE_MARKETS: string;
   readonly VITE_REPOSITORY_NAME: string;
   readonly VITE_AWS_REGION: string;

@@ -26,16 +26,16 @@ function getInitials(name: string) {
 function rbacRoleDisplay(
   access: ReturnType<typeof useAuth>['access'],
   accessStatus: ReturnType<typeof useAuth>['accessStatus']
-): { label: string; color: 'primary' | 'default' | 'warning' } {
+): { label: string; color: 'primary' | 'secondary' | 'default' | 'warning' } {
   if (accessStatus === 'loading' || accessStatus === 'idle') {
     return { label: 'Checking access…', color: 'default' };
   }
   if (accessStatus === 'error') {
     return { label: 'Access unknown', color: 'warning' };
   }
-  return access?.role === 'admin'
-    ? { label: 'Admin', color: 'primary' }
-    : { label: 'User', color: 'default' };
+  if (access?.role === 'admin') return { label: 'Admin', color: 'primary' };
+  if (access?.role === 'developer') return { label: 'Developer', color: 'secondary' };
+  return { label: 'User', color: 'default' };
 }
 
 export function ProfilePage() {

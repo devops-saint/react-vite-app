@@ -1,6 +1,7 @@
 import fnmatch
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -1122,6 +1123,359 @@ def handle_webhook(payload, origin=None):
     )
 
 
+# =====================================================
+# Q&A FORUM (idea #15)
+# =====================================================
+# Questions live in the same DynamoDB table as requests, under a
+# "QNA#<question_id>" key (same prefix-namespacing the MARKETLOCK#/LOCK#
+# items already use). Every question also carries submitted_by_id="QNA",
+# so the existing submitted-by-created-at index lists them newest-first
+# with a plain Query - no Scan and no new infrastructure. The thread's
+# comments are a list on the question item itself (same shape as the
+# request items' existing comments[]), appended atomically with
+# list_append. Deliberately uses `qna_status` (not `status`) so none of
+# the request-status scans/sweeps can ever pick these items up.
+QNA_PREFIX = "QNA#"
+QNA_PARTITION = "QNA"
+QNA_MAX_TITLE = 200
+QNA_MAX_BODY = 5000
+QNA_MAX_COMMENTS = 200
+QNA_LIST_LIMIT = 300
+QNA_ROLE_CACHE_SECONDS = 300
+# Admins to email when a question is asked (comma-separated). Also treated
+# as admins when answering, as a fallback if the Azure AD group-fetch
+# Lambda isn't configured/reachable.
+QNA_ADMIN_EMAILS = [
+    email.strip()
+    for email in os.environ.get("QNA_ADMIN_EMAILS", "").split(",")
+    if email.strip()
+]
+# Frontend base URL, only used to put a direct link to the thread in the
+# notification emails (e.g. https://portal.example.com). Optional.
+PORTAL_BASE_URL = os.environ.get("PORTAL_BASE_URL", "").rstrip("/")
+
+_qna_role_cache = {}
+
+
+# =====================================================
+# ADMIN ALLOW-LIST (RBAC refinement)
+# =====================================================
+# The Azure AD group-fetch Lambda marks anyone in the tool's admin group as
+# role "admin" - which also includes developers doing migration work who
+# should not have admin powers in this portal. PORTAL_ADMIN_EMAILS is the
+# list of people who really are admins: an AD "admin" whose email isn't on
+# it is reported as role "developer" instead (same all-markets, all-
+# environments reach, but none of the admin-only actions).
+#
+# An EMPTY list switches this off and keeps the old behaviour (every AD
+# admin is an admin), so deploying this change without setting the variable
+# demotes nobody. Set it to enforce the split. The division is made here on
+# the backend, in the one place both the frontend (GET /dpc/access) and the
+# Q&A admin check read from.
+PORTAL_ADMIN_EMAILS = frozenset(
+    email.strip().lower()
+    for email in os.environ.get("PORTAL_ADMIN_EMAILS", "").split(",")
+    if email.strip()
+)
+if not PORTAL_ADMIN_EMAILS:
+    print("[ACCESS] PORTAL_ADMIN_EMAILS is empty - every Azure AD admin is treated as a portal admin")
+
+
+def _apply_admin_allowlist(access_body, requested_email):
+    """Returns access_body with role "admin" downgraded to "developer"
+    unless the user is on PORTAL_ADMIN_EMAILS. Anything that is not a
+    well-formed admin response (a plain user, a malformed body) is returned
+    untouched, and the input is never mutated. Never promotes: it can only
+    turn "admin" into "developer", so a bug here can't create admins.
+
+    The identity compared is the email the group-fetch Lambda itself
+    reports, falling back to the one that was asked about - not blindly the
+    request's query string."""
+    if not PORTAL_ADMIN_EMAILS or not isinstance(access_body, dict):
+        return access_body
+    access = access_body.get("access")
+    if not isinstance(access, dict) or access.get("role") != "admin":
+        return access_body
+
+    identity = str(access_body.get("email") or requested_email or "").strip().lower()
+    if identity in PORTAL_ADMIN_EMAILS:
+        return access_body
+
+    # !r so a crafted email can't inject extra log lines.
+    print(f"[ACCESS] {identity!r} is an Azure AD admin but not on PORTAL_ADMIN_EMAILS - reporting role developer")
+    return {**access_body, "access": {**access, "role": "developer"}}
+
+
+def _send_notification_email(to_addresses, subject, body):
+    """Best-effort email. Never raises - a notification failure must not
+    fail the question/comment that was already durably stored."""
+    to_addresses = [address for address in to_addresses if address]
+    if not to_addresses:
+        return
+    if not notification_from_email:
+        print(f"[QNA] DOMAIN not configured - skipping email: {subject}")
+        return
+    try:
+        ses_client.send_email(
+            Source=notification_from_email,
+            Destination={"ToAddresses": to_addresses},
+            Message={
+                "Subject": {"Data": subject},
+                "Body": {"Text": {"Data": body}},
+            },
+        )
+    except ClientError as error:
+        print(f"[QNA] Failed to send email '{subject}': {error}")
+
+
+def _qna_is_admin(email):
+    """True only when the email is positively known to be an admin: either
+    listed in QNA_ADMIN_EMAILS, or the Azure AD group-fetch Lambda (same
+    one GET /dpc/access uses) says role == admin. Any failure means
+    "not admin" - this never grants admin on an error. Cached briefly per
+    warm container, since a busy thread would otherwise invoke the
+    group-fetch Lambda on every comment."""
+    if not email:
+        return False
+    normalized = email.strip().lower()
+    if normalized in {admin.lower() for admin in QNA_ADMIN_EMAILS}:
+        return True
+    if not azure_ad_group_fetch_lambda_name:
+        return False
+
+    cached = _qna_role_cache.get(normalized)
+    now = time.time()
+    if cached and cached[1] > now:
+        return cached[0]
+
+    is_admin = False
+    try:
+        invoke_result = lambda_client.invoke(
+            FunctionName=azure_ad_group_fetch_lambda_name,
+            InvocationType="RequestResponse",
+            Payload=json.dumps({"email": email}),
+        )
+        raw_payload = json.loads(invoke_result["Payload"].read())
+        if not invoke_result.get("FunctionError") and raw_payload.get("statusCode", 200) == 200:
+            body = _apply_admin_allowlist(json.loads(raw_payload.get("body") or "{}"), email)
+            is_admin = (body.get("access") or {}).get("role") == "admin"
+    except (ClientError, json.JSONDecodeError, TypeError, AttributeError) as error:
+        print(f"[QNA] Role lookup failed for {email}: {error}")
+        return False
+
+    _qna_role_cache[normalized] = (is_admin, now + QNA_ROLE_CACHE_SECONDS)
+    return is_admin
+
+
+def _qna_question_id_from_path(path):
+    """('<id>', remainder) for /dpc/qna/<id>[/comments], else (None, None)."""
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 3 or parts[0] != "dpc" or parts[1] != "qna":
+        return None, None
+    question_id = parts[2]
+    if not question_id.replace("-", "").isalnum() or len(question_id) > 64:
+        return None, None
+    return question_id, "/".join(parts[3:])
+
+
+def _qna_comment_public(comment):
+    # Authors are exposed by display name only - emails stay server-side.
+    return {
+        "commentId": comment.get("commentId"),
+        "body": comment.get("body", ""),
+        "authorName": comment.get("authorName", "Unknown"),
+        "isAdmin": bool(comment.get("isAdmin")),
+        "createdAt": comment.get("createdAt"),
+    }
+
+
+def _qna_public(item, include_comments):
+    comments = item.get("comments") or []
+    admin_answer = next((c for c in comments if c.get("isAdmin")), None)
+    result = {
+        "questionId": item["question_id"],
+        "title": item.get("title", ""),
+        "body": item.get("body", ""),
+        "askedByName": (item.get("asked_by") or {}).get("name", "Unknown"),
+        "askedById": (item.get("asked_by") or {}).get("id"),
+        "status": item.get("qna_status", "OPEN"),
+        "commentCount": len(comments),
+        "createdAt": item["createdAt"],
+        "updatedAt": item.get("updatedAt", item["createdAt"]),
+        # Short preview of the first admin answer, so list views (and the
+        # troubleshooting page's search) can show a solution without
+        # loading every thread.
+        "answerPreview": (admin_answer.get("body", "")[:300] if admin_answer else None),
+    }
+    if include_comments:
+        result["comments"] = [_qna_comment_public(c) for c in comments]
+    return result
+
+
+def _qna_thread_link(question_id):
+    return f"{PORTAL_BASE_URL}/qna/{question_id}" if PORTAL_BASE_URL else None
+
+
+def _notify_admins_new_question(item):
+    asked_by = item.get("asked_by") or {}
+    link = _qna_thread_link(item["question_id"])
+    body = (
+        "A new question was asked in the portal's Q&A forum and needs a response.\n\n"
+        f"Title: {item['title']}\n"
+        f"Asked by: {asked_by.get('name', 'Unknown')} <{asked_by.get('email', 'unknown')}>\n\n"
+        f"{item['body']}\n\n"
+        + (f"Answer it here: {link}\n" if link else "Open the portal's Q&A page to answer it.\n")
+    )
+    _send_notification_email(
+        QNA_ADMIN_EMAILS, f"[DPC Portal Q&A] New question: {item['title']}", body
+    )
+
+
+def _notify_asker_answered(item, answer):
+    asked_by = item.get("asked_by") or {}
+    asker_email = asked_by.get("email")
+    if not asker_email:
+        return
+    link = _qna_thread_link(item["question_id"])
+    body = (
+        f"An admin has responded to your question \"{item['title']}\".\n\n"
+        f"{answer['authorName']} wrote:\n{answer['body']}\n\n"
+        + (f"View the thread: {link}\n" if link else "")
+    )
+    _send_notification_email(
+        [asker_email], f"[DPC Portal Q&A] Your question was answered: {item['title']}", body
+    )
+
+
+def handle_qna(method, path, event, origin):
+    """Routes for /dpc/qna*. Returns None when the path isn't a Q&A route,
+    so handle_request can fall through to its other routes."""
+    if path == "/dpc/qna":
+        if method == "GET":
+            items = []
+            start_key = None
+            while len(items) < QNA_LIST_LIMIT:
+                query_args = {
+                    "IndexName": "submitted-by-created-at",
+                    "KeyConditionExpression": Key("submitted_by_id").eq(QNA_PARTITION),
+                    "ScanIndexForward": False,
+                }
+                if start_key:
+                    query_args["ExclusiveStartKey"] = start_key
+                result = table.query(**query_args)
+                items.extend(result.get("Items", []))
+                start_key = result.get("LastEvaluatedKey")
+                if not start_key:
+                    break
+            return response(
+                200,
+                {"questions": [_qna_public(item, False) for item in items[:QNA_LIST_LIMIT]]},
+                origin,
+            )
+
+        if method == "POST":
+            try:
+                payload = json.loads(event.get("body") or "{}")
+            except json.JSONDecodeError:
+                return response(400, {"message": "Invalid request payload"}, origin)
+            title = str(payload.get("title") or "").strip()
+            body = str(payload.get("body") or "").strip()
+            asked_by = payload.get("askedBy") or {}
+            if not title or not body or not asked_by.get("id"):
+                return response(400, {"message": "title, body and askedBy.id are required"}, origin)
+            if len(title) > QNA_MAX_TITLE or len(body) > QNA_MAX_BODY:
+                return response(400, {"message": "Question is too long"}, origin)
+
+            now = datetime.now(timezone.utc).isoformat()
+            question_id = str(uuid.uuid4())
+            item = {
+                "request_id": f"{QNA_PREFIX}{question_id}",
+                "question_id": question_id,
+                "submitted_by_id": QNA_PARTITION,
+                "qna_status": "OPEN",
+                "title": title,
+                "body": body,
+                "asked_by": {
+                    "id": str(asked_by["id"]),
+                    "name": str(asked_by.get("name") or "Unknown"),
+                    "email": str(asked_by.get("email") or ""),
+                },
+                "comments": [],
+                "createdAt": now,
+                "updatedAt": now,
+            }
+            table.put_item(Item=item)
+            _notify_admins_new_question(item)
+            return response(201, _qna_public(item, True), origin)
+
+        return response(405, {"message": "Method not allowed"}, origin)
+
+    question_id, remainder = _qna_question_id_from_path(path)
+    if not question_id:
+        return None
+    key = {"request_id": f"{QNA_PREFIX}{question_id}"}
+
+    if method == "GET" and remainder == "":
+        item = table.get_item(Key=key).get("Item")
+        if not item:
+            return response(404, {"message": "Question not found"}, origin)
+        return response(200, _qna_public(item, True), origin)
+
+    if method == "POST" and remainder == "comments":
+        try:
+            payload = json.loads(event.get("body") or "{}")
+        except json.JSONDecodeError:
+            return response(400, {"message": "Invalid request payload"}, origin)
+        comment_body = str(payload.get("body") or "").strip()
+        author = payload.get("author") or {}
+        if not comment_body or not author.get("id"):
+            return response(400, {"message": "body and author.id are required"}, origin)
+        if len(comment_body) > QNA_MAX_BODY:
+            return response(400, {"message": "Comment is too long"}, origin)
+
+        is_admin = _qna_is_admin(author.get("email"))
+        now = datetime.now(timezone.utc).isoformat()
+        comment = {
+            "commentId": str(uuid.uuid4()),
+            "body": comment_body,
+            "authorId": str(author["id"]),
+            "authorName": str(author.get("name") or "Unknown"),
+            "authorEmail": str(author.get("email") or ""),
+            "isAdmin": is_admin,
+            "createdAt": now,
+        }
+        update_expression = "SET comments = list_append(if_not_exists(comments, :empty), :comment), updatedAt = :now"
+        values = {
+            ":empty": [],
+            ":comment": [comment],
+            ":now": now,
+            ":max": QNA_MAX_COMMENTS,
+        }
+        if is_admin:
+            # An admin response is what moves a question from OPEN to
+            # ANSWERED - ordinary users' comments never do.
+            update_expression += ", qna_status = :answered"
+            values[":answered"] = "ANSWERED"
+        try:
+            updated = table.update_item(
+                Key=key,
+                UpdateExpression=update_expression,
+                ConditionExpression="attribute_exists(request_id) AND (attribute_not_exists(comments) OR size(comments) < :max)",
+                ExpressionAttributeValues=values,
+                ReturnValues="ALL_NEW",
+            )["Attributes"]
+        except ClientError as error:
+            if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return response(404, {"message": "Question not found, or the thread is full"}, origin)
+            raise
+
+        if is_admin:
+            _notify_asker_answered(updated, comment)
+        return response(201, _qna_public(updated, True), origin)
+
+    return None
+
+
 def handle_request(event):
     method = event["requestContext"]["http"]["method"]
     path = event.get("rawPath", "")
@@ -1193,6 +1547,11 @@ def handle_request(event):
     if method == "GET" and path == "/dpc/listrequests":
         if not user_id:
             return response(400, {"message": "userId is required"}, origin)
+        # "QNA" is the reserved partition Q&A forum questions are stored
+        # under (see QNA_PARTITION) - never a real user id, and listing it
+        # here would dump raw forum items including asker emails.
+        if user_id == QNA_PARTITION:
+            return response(400, {"message": "Invalid userId"}, origin)
         result = table.query(
             IndexName="submitted-by-created-at",
             KeyConditionExpression=Key("submitted_by_id").eq(user_id),
@@ -1328,6 +1687,9 @@ def handle_request(event):
             print(f"[ACCESS] Azure AD group fetch lambda returned {access_status}: {access_body}")
             return response(502, {"message": "Failed to fetch access"}, origin)
 
+        # Admin allow-list: an Azure AD admin who isn't on PORTAL_ADMIN_EMAILS
+        # is reported as role "developer" (see _apply_admin_allowlist).
+        access_body = _apply_admin_allowlist(access_body, email)
         return response(200, access_body, origin)
 
     if method == "POST" and path.startswith("/dpc/requests/") and path.endswith("/cancel"):
@@ -1453,6 +1815,12 @@ def handle_request(event):
         except json.JSONDecodeError:
             return response(400, {"message": "Invalid webhook payload"}, origin)
         return handle_webhook(payload, origin)
+
+    # Q&A forum (idea #15) - see the Q&A FORUM block above handle_request.
+    if path == "/dpc/qna" or path.startswith("/dpc/qna/"):
+        qna_response = handle_qna(method, path, event, origin)
+        if qna_response is not None:
+            return qna_response
 
     return response(404, {"message": "Route not found"}, origin)
 

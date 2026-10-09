@@ -65,7 +65,9 @@ export function UserMenu() {
   // Roles" list, which is a separate, older signal. Kept short/quiet since
   // this is just an at-a-glance label, not a security boundary in itself.
   const rbacRoleLabel =
-    accessStatus === 'loaded' ? (access?.role === 'admin' ? 'Admin' : 'User') : null;
+    accessStatus === 'loaded' && access
+      ? { admin: 'Admin', developer: 'Developer', user: 'User' }[access.role]
+      : null;
 
   return (
     <>

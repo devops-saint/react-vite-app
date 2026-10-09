@@ -147,30 +147,36 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
   }, [instance]);
 
-  // Check if user has a specific role. ADMIN reflects real, server-sourced
-  // RBAC (access.role === 'admin' from the org's /access lambda, idea #19)
-  // - this is what lets RequestDetailsPage's existing hasRole(ADMIN) gates
-  // (recovery actions, PR links) work off real Azure AD-backed admin
-  // status.
+  // Admin status. Once the RBAC lookup has loaded it is the ONLY authority:
+  // access.role === 'admin' (an Azure AD admin who is also on the portal's
+  // admin allow-list - see PORTAL_ADMIN_EMAILS in the Lambda). A 'developer'
+  // or 'user' is not an admin even if their Azure AD token happens to carry
+  // an admin app-role claim, otherwise that claim would quietly undo the
+  // developer/admin split. Only while RBAC has not loaded (or failed) does
+  // the token claim apply, which is how it behaved before RBAC existed.
+  // This is what RequestDetailsPage's and MyRequestsPage's hasRole(ADMIN)
+  // gates (recovery actions, PR links) run on.
+  const isAdmin =
+    accessStatus === 'loaded'
+      ? access?.role === 'admin'
+      : Boolean(user?.roles.includes(UserRole.ADMIN));
+
+  // Check if user has a specific role.
   const hasRole = useCallback(
     (role: UserRole): boolean => {
-      if (role === UserRole.ADMIN && access?.role === 'admin') {
-        return true;
-      }
+      if (role === UserRole.ADMIN) return isAdmin;
       return user?.roles.includes(role) || false;
     },
-    [user, access]
+    [user, isAdmin]
   );
 
   // Check if user has any of the specified roles
   const hasAnyRole = useCallback(
-    (roles: UserRole[]): boolean => {
-      if (roles.includes(UserRole.ADMIN) && access?.role === 'admin') {
-        return true;
-      }
-      return roles.some((role) => user?.roles.includes(role)) || false;
-    },
-    [user, access]
+    (roles: UserRole[]): boolean =>
+      roles.some((role) =>
+        role === UserRole.ADMIN ? isAdmin : user?.roles.includes(role) || false
+      ),
+    [user, isAdmin]
   );
 
   // Mutations (create/cancel a request, de-whitelist, admin actions) are
