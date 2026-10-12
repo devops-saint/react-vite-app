@@ -667,10 +667,11 @@ def _update_item(request_id, status, event_key, now, stage_index=None, comments=
 # execution role (aws_iam_role.lambda, this same stack) to sts:AssumeRole
 # into it, and whose permissions policy grants at least iam:GetRole,
 # iam:ListRolePolicies, iam:ListAttachedRolePolicies, iam:GetRolePolicy
-# and iam:GetPolicyVersion, scoped to the matillion-dpc-*-agent-*-irsa
-# role(s) in that account. Provisioning that role/trust in each target
-# account is out of scope for this repo (those accounts aren't managed
-# here) - AWS_VALIDATION_ROLE_ARN_DEV/QA/PRD below is that role's ARN
+# iam:GetPolicy and iam:GetPolicyVersion, scoped to the
+# matillion-dpc-*-agent-*-irsa role(s) in that account. The role is
+# provisioned by validator_role.tf (same account) or
+# validator_role_cross_account/ (other accounts) next to this Lambda's
+# Terraform - AWS_VALIDATION_ROLE_ARN_DEV/QA/PRD below is that role's ARN
 # once it exists; an unset/empty value for a given environment means
 # verification is skipped for requests targeting it (they stay
 # PENDING_AWS_VERIFICATION indefinitely until the env var is configured -

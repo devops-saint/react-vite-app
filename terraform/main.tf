@@ -195,10 +195,9 @@ resource "aws_lambda_function" "request_api" {
       # Q&A forum (idea #15): who to email on a new question, and the
       # frontend URL used for the thread link in that email.
       QNA_ADMIN_EMAILS = join(",", var.qna_admin_emails)
-      # Real portal admins: var.portal_admin_emails PLUS var.pr_approver_emails
-      # (approvers are always admins). An Azure AD admin not listed in either
-      # is reported to the portal as role "developer".
-      PORTAL_ADMIN_EMAILS = join(",", distinct(concat(var.portal_admin_emails, var.pr_approver_emails)))
+      # Real portal admins (see var.portal_admin_emails): an Azure AD admin not
+      # listed here is reported to the portal as role "developer".
+      PORTAL_ADMIN_EMAILS = join(",", var.portal_admin_emails)
       PORTAL_BASE_URL  = var.portal_base_url != "" ? var.portal_base_url : try(var.cors_allow_origins[0], "")
       DOMAIN             = var.domain
       # Used only to build a human-viewable Bitbucket PR link per stage in
@@ -219,9 +218,9 @@ resource "aws_lambda_function" "request_api" {
       AWS_ACCOUNT_ID_DEV        = var.aws_account_id_dev
       AWS_ACCOUNT_ID_QA         = var.aws_account_id_qa
       AWS_ACCOUNT_ID_PRD        = var.aws_account_id_prd
-      AWS_VALIDATION_ROLE_ARN_DEV = var.aws_validation_role_arn_dev
-      AWS_VALIDATION_ROLE_ARN_QA  = var.aws_validation_role_arn_qa
-      AWS_VALIDATION_ROLE_ARN_PRD = var.aws_validation_role_arn_prd
+      AWS_VALIDATION_ROLE_ARN_DEV = local.validation_role_arn_dev
+      AWS_VALIDATION_ROLE_ARN_QA  = local.validation_role_arn_qa
+      AWS_VALIDATION_ROLE_ARN_PRD = local.validation_role_arn_prd
     }
   }
 

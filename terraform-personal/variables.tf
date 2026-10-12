@@ -166,7 +166,7 @@ variable "portal_base_url" {
 # --- Portal admin allow-list (RBAC) ------------------------------------------
 
 variable "portal_admin_emails" {
-  description = "Email addresses of the people who are real portal admins. The Azure AD group-fetch Lambda reports everyone in the tool's admin group as role \"admin\", which also includes developers doing migration work; an AD admin whose email is NOT in this list is reported to the portal as role \"developer\" instead (access to every market and environment like an admin, but none of the admin-only actions: release market lock, retry promotion, PR links, and answering Q&A as an admin). Matching is case-insensitive. Everyone in var.pr_approver_emails is ALSO treated as a portal admin; this list is for additional admins who are not PR approvers. LEAVE BOTH LISTS EMPTY ONLY IF YOU WANT THE OLD BEHAVIOUR: if portal_admin_emails and pr_approver_emails are both empty the check is disabled and every Azure AD admin stays an admin."
+  description = "Email addresses of the people who are real portal admins. The Azure AD group-fetch Lambda reports everyone in the tool's admin group as role \"admin\", which also includes developers doing migration work; an AD admin whose email is NOT in this list is reported to the portal as role \"developer\" instead (access to every market and environment like an admin, but none of the admin-only actions: release market lock, retry promotion, PR links, and answering Q&A as an admin). Matching is case-insensitive. This is the only list that defines portal admins (pr_approver_emails is unrelated). LEAVE EMPTY ONLY IF YOU WANT THE OLD BEHAVIOUR: an empty list disables the check and every Azure AD admin stays an admin."
   type        = list(string)
   default     = []
 
