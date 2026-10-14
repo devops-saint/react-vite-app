@@ -6,6 +6,7 @@ import {
   ApiGatewaySuccessResponse,
   ApiGatewayErrorResponse,
   RequestedBy,
+  RequestType,
 } from '@/types/request.types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -20,7 +21,7 @@ import { v4 as uuidv4 } from 'uuid';
 export const transformToApiGatewayPayload = (
   formData: CreateRequestFormData,
   submittedBy: RequestedBy,
-  requestType: 'WHITELIST' | 'DEWHITELIST' = 'WHITELIST'
+  requestType: RequestType = 'WHITELIST'
 ): ApiGatewayRequestPayload => {
   const payload: ApiGatewayRequestPayload = {
     request_id: `REQ-${uuidv4().substring(0, 8).toUpperCase()}`,
@@ -32,7 +33,7 @@ export const transformToApiGatewayPayload = (
     // Omit for the ordinary/default case rather than always sending
     // 'WHITELIST', so an older backend deployment that doesn't know this
     // field yet sees an identical payload to before.
-    ...(requestType === 'DEWHITELIST' ? { request_type: requestType } : {}),
+    ...(requestType !== 'WHITELIST' ? { request_type: requestType } : {}),
   };
 
   // Transform environments
@@ -52,6 +53,23 @@ export const transformToApiGatewayPayload = (
       // Extract ARNs from LambdaFunction objects
       functions: env.resources.lambdaFunctions.map((func) => func.functionArn),
     };
+
+    // COMBINED: resources.* above are the additions; the removals ride along
+    // in a nested "remove" object (see update_yaml_data in lambda-gitops).
+    if (requestType === 'COMBINED' && env.removals) {
+      const remove = {
+        buckets: env.removals.s3Buckets.map((bucket) => bucket.bucketName),
+        secrets: env.removals.secretsManager.map((secret) => secret.secretArn),
+        kmsKeys: env.removals.kmsKeys.map((key) => key.keyArn),
+        functions: env.removals.lambdaFunctions.map((func) => func.functionArn),
+      };
+      (Object.keys(remove) as Array<keyof typeof remove>).forEach((section) => {
+        if (remove[section].length === 0) delete remove[section];
+      });
+      if (Object.keys(remove).length > 0) {
+        payload.environments[envKey].remove = remove;
+      }
+    }
 
     // Remove empty arrays to keep payload clean
     if (payload.environments[envKey]?.buckets?.length === 0) {
@@ -77,7 +95,7 @@ export const transformToApiGatewayPayload = (
 export const submitRequest = async (
   formData: CreateRequestFormData,
   submittedBy: RequestedBy,
-  requestType: 'WHITELIST' | 'DEWHITELIST' = 'WHITELIST'
+  requestType: RequestType = 'WHITELIST'
 ): Promise<ApiGatewaySuccessResponse> => {
   try {
     // Transform form data to API Gateway format

@@ -321,86 +321,120 @@ def handle_get_whitelist(event):
 # git-host-agnostic)
 # =====================================================
 
-def update_yaml_data(yaml_data, env_payload, request_type="WHITELIST"):
-    """request_type="DEWHITELIST" mirrors this exact function for
-    removal instead of addition - same SUPPORTED_SECTIONS, same
-    dedup-by-string-value comparison, same YAML sequence in place. A
-    de-whitelist request rides through the identical
-    branch/PR/review/promotion pipeline as a whitelist one (see
-    handle_create_pr) - only the diff this function produces differs."""
+def _remove_values(yaml_data, section, values):
+    """Removes each of values from yaml_data[section], matched by string
+    value. A value that isn't there is logged and skipped."""
 
-    is_dewhitelist = str(request_type).upper() == "DEWHITELIST"
+    if not values or not isinstance(values, list):
+        return
+
+    if section not in yaml_data or yaml_data[section] is None:
+        yaml_data[section] = []
+
+    existing = {
+        str(v) for v in yaml_data[section]
+    }
+
+    for value in values:
+
+        if value in existing:
+
+            # Remove by string value, not index/identity - ruamel's
+            # CommentedSeq supports list.remove() as a plain list
+            # does, and comparing the scalar's str() form matches
+            # how "existing" itself was built above.
+            for i, item in enumerate(yaml_data[section]):
+                if str(item) == value:
+                    del yaml_data[section][i]
+                    break
+
+            existing.discard(value)
+
+            print(
+                f"Removed {value} "
+                f"from {section}"
+            )
+        else:
+
+            print(
+                f"{value} not currently "
+                f"in {section} - nothing to remove"
+            )
+
+
+def _add_values(yaml_data, section, values):
+    """Appends each of values to yaml_data[section] unless it is already
+    there (compared by string value)."""
+
+    if not values or not isinstance(values, list):
+        return
+
+    if section not in yaml_data or yaml_data[section] is None:
+        yaml_data[section] = []
+
+    existing = {
+        str(v) for v in yaml_data[section]
+    }
+
+    for value in values:
+
+        if value not in existing:
+
+            if section in [
+                "secrets",
+                "kmsKeys",
+                "functions"
+            ]:
+                yaml_data[section].append(
+                    DoubleQuotedScalarString(value)
+                )
+            else:
+                yaml_data[section].append(value)
+
+            existing.add(value)
+
+            print(
+                f"Added {value} "
+                f"to {section}"
+            )
+        else:
+
+            print(
+                f"{value} already exists "
+                f"in {section}"
+            )
+
+
+def update_yaml_data(yaml_data, env_payload, request_type="WHITELIST"):
+    """WHITELIST adds the listed resources; DEWHITELIST removes them (same
+    SUPPORTED_SECTIONS, same dedup-by-string-value comparison, same YAML
+    sequence in place). COMBINED adds the listed resources AND removes the
+    ones under env_payload["remove"], in one pass over the same file. All
+    three ride through the identical branch/PR/review/promotion pipeline
+    (see handle_create_pr) - only the diff this function produces
+    differs."""
+
+    request_type = str(request_type).upper()
 
     for section in SUPPORTED_SECTIONS:
 
         values = env_payload.get(section, [])
 
-        if not values:
-            continue
+        if request_type == "DEWHITELIST":
+            _remove_values(yaml_data, section, values)
+        else:
+            _add_values(yaml_data, section, values)
 
-        if section not in yaml_data or yaml_data[section] is None:
-            yaml_data[section] = []
+    if request_type == "COMBINED":
 
-        existing = {
-            str(v) for v in yaml_data[section]
-        }
+        removals = env_payload.get("remove")
 
-        if is_dewhitelist:
-
-            for value in values:
-
-                if value in existing:
-
-                    # Remove by string value, not index/identity - ruamel's
-                    # CommentedSeq supports list.remove() as a plain list
-                    # does, and comparing the scalar's str() form matches
-                    # how "existing" itself was built above.
-                    for i, item in enumerate(yaml_data[section]):
-                        if str(item) == value:
-                            del yaml_data[section][i]
-                            break
-
-                    existing.discard(value)
-
-                    print(
-                        f"Removed {value} "
-                        f"from {section}"
-                    )
-                else:
-
-                    print(
-                        f"{value} not currently "
-                        f"in {section} - nothing to remove"
-                    )
-
-            continue
-
-        for value in values:
-
-            if value not in existing:
-
-                if section in [
-                    "secrets",
-                    "kmsKeys",
-                    "functions"
-                ]:
-                    yaml_data[section].append(
-                        DoubleQuotedScalarString(value)
-                    )
-                else:
-                    yaml_data[section].append(value)
-
-                existing.add(value)
-
-                print(
-                    f"Added {value} "
-                    f"to {section}"
-                )
-            else:
-
-                print(
-                    f"{value} already exists "
-                    f"in {section}"
+        if isinstance(removals, dict):
+            for section in SUPPORTED_SECTIONS:
+                _remove_values(
+                    yaml_data,
+                    section,
+                    removals.get(section, [])
                 )
 
 # =====================================================
@@ -853,14 +887,16 @@ def handle_create_pr(event):
         requested_by=payload.get("submitted_by")
     )
 
-    is_dewhitelist = str(payload.get("request_type", "WHITELIST")).upper() == "DEWHITELIST"
+    request_type = str(payload.get("request_type", "WHITELIST")).upper()
+    if request_type == "DEWHITELIST":
+        pr_title = f"[De-whitelist] GitOps Update {branch_name}"
+    elif request_type == "COMBINED":
+        pr_title = f"[Whitelist + De-whitelist] GitOps Update {branch_name}"
+    else:
+        pr_title = f"GitOps Update {branch_name}"
     pr = create_pull_request(
         branch_name,
-        title=(
-            f"[De-whitelist] GitOps Update {branch_name}"
-            if is_dewhitelist
-            else f"GitOps Update {branch_name}"
-        ),
+        title=pr_title,
     )
     pr_id = pr.get("number")
 

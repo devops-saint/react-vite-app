@@ -24,7 +24,8 @@ import SupportAgentIcon from '@mui/icons-material/SupportAgent';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { config, buildQnaDetailsPath } from '@/config';
 import { TROUBLESHOOTING_ARTICLES } from '@/constants/troubleshootingArticles';
-import { qnaService } from '@/api/services';
+import { knowledgeService, qnaService } from '@/api/services';
+import type { ConfluencePageContent } from '@/api/services';
 import { fuzzySearch } from '@/utils';
 import type { QnaQuestionSummary } from '@/types/qna.types';
 
@@ -42,7 +43,16 @@ interface KnowledgeEntry {
   path?: string;
   pathLabel?: string;
   steps?: string[];
+  /** Page text read by the backend (Confluence), searched but not shown whole. */
+  body?: string;
 }
+
+// Same page, however the URL was typed in the two places it is configured
+// (the .env list and the backend's list): ignore a trailing slash/fragment.
+const normalizeUrl = (url: string) => url.trim().replace(/#.*$/, '').replace(/\/+$/, '');
+
+const excerpt = (text: string, max = 220) =>
+  text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
 
 const SOURCE_LABEL: Record<SourceKind, string> = {
   internal: 'Portal guide',
@@ -59,6 +69,7 @@ export function TroubleshootingPage() {
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [answeredQuestions, setAnsweredQuestions] = useState<QnaQuestionSummary[]>([]);
+  const [confluenceContent, setConfluenceContent] = useState<ConfluencePageContent[]>([]);
   const [outcome, setOutcome] = useState<'unanswered' | 'solved' | 'unsolved'>('unanswered');
   const [copied, setCopied] = useState(false);
 
@@ -78,6 +89,25 @@ export function TroubleshootingPage() {
         }
       } catch (error) {
         console.warn('[Troubleshooting] Could not load answered Q&A threads:', error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The text of the Confluence pages, read server-side with a service
+  // account (they need a login the browser doesn't have). Best-effort: if
+  // it isn't configured or can't be reached, Confluence pages are still
+  // searched by the title/keywords/summary from the .env list.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const pages = await knowledgeService.getConfluencePages();
+        if (!cancelled) setConfluenceContent(pages);
+      } catch (error) {
+        console.warn('[Troubleshooting] Could not load Confluence page text:', error);
       }
     })();
     return () => {
@@ -110,6 +140,37 @@ export function TroubleshootingPage() {
         url: link.url,
       }));
 
+    // Confluence: the .env entries supply title/keywords/summary, the backend
+    // supplies the page text. A page listed only on the backend side is
+    // still searchable (titled from Confluence itself).
+    const contentByUrl = new Map(confluenceContent.map((page) => [normalizeUrl(page.url), page]));
+    const configuredUrls = new Set(confluencePages.map((link) => normalizeUrl(link.url)));
+    const confluenceEntries: KnowledgeEntry[] = [
+      ...confluencePages.map<KnowledgeEntry>((link, index) => {
+        const page = contentByUrl.get(normalizeUrl(link.url));
+        return {
+          id: `confluence-${index}`,
+          title: link.title,
+          summary: link.summary || (page ? excerpt(page.text) : ''),
+          keywords: link.keywords,
+          source: 'confluence',
+          url: link.url,
+          body: page?.text,
+        };
+      }),
+      ...confluenceContent
+        .filter((page) => !configuredUrls.has(normalizeUrl(page.url)))
+        .map<KnowledgeEntry>((page, index) => ({
+          id: `confluence-backend-${index}`,
+          title: page.title || page.url,
+          summary: excerpt(page.text),
+          keywords: '',
+          source: 'confluence',
+          url: page.url,
+          body: page.text,
+        })),
+    ];
+
     return [
       ...TROUBLESHOOTING_ARTICLES.map<KnowledgeEntry>((article) => ({
         id: `article-${article.id}`,
@@ -122,7 +183,7 @@ export function TroubleshootingPage() {
         steps: article.steps,
       })),
       ...fromLinks(internalDocs, 'internal', 'internal-doc'),
-      ...fromLinks(confluencePages, 'confluence', 'confluence'),
+      ...confluenceEntries,
       ...fromLinks(matillionDocs, 'matillion', 'matillion'),
       ...answeredQuestions.map<KnowledgeEntry>((question) => ({
         id: `qna-${question.questionId}`,
@@ -134,7 +195,7 @@ export function TroubleshootingPage() {
         pathLabel: 'View the full answer',
       })),
     ];
-  }, [answeredQuestions, confluencePages, internalDocs, matillionDocs]);
+  }, [answeredQuestions, confluenceContent, confluencePages, internalDocs, matillionDocs]);
 
   const trimmedQuery = debouncedQuery.trim();
   const hasQuery = trimmedQuery.length >= MIN_QUERY_LENGTH;
@@ -149,6 +210,9 @@ export function TroubleshootingPage() {
               { text: entry.keywords, weight: 2 },
               { text: entry.summary, weight: 1.5 },
               { text: entry.steps?.join(' ') ?? '', weight: 1 },
+              // Whole-page text: weighted so that a word found only in the
+              // body still counts as a hit, but ranks below title/keywords.
+              { text: entry.body ?? '', weight: 2.1 },
             ],
             { limit: 8 }
           )

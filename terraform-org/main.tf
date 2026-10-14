@@ -380,6 +380,12 @@ resource "aws_lambda_function" "main" {
       # Real portal admins (see var.portal_admin_emails): an Azure AD admin not
       # listed here is reported to the portal as role "developer".
       PORTAL_ADMIN_EMAILS = join(",", var.portal_admin_emails)
+      # Troubleshooting page: Confluence pages read with a service account
+      # (see confluence_knowledge.tf).
+      CONFLUENCE_PAGE_URLS     = join(",", var.confluence_page_urls)
+      CONFLUENCE_SECRET_ID     = var.confluence_secret_id
+      CONFLUENCE_API_BASE_URL  = var.confluence_api_base_url
+      CONFLUENCE_CACHE_SECONDS = tostring(var.confluence_cache_seconds)
       PORTAL_BASE_URL  = var.portal_base_url != "" ? var.portal_base_url : "https://${aws_cloudfront_distribution.frontend.domain_name}"
       # AWS-side access verification (idea #4) - see handler.py's
       # AWS-SIDE ACCESS VERIFICATION block. Per-env target account id

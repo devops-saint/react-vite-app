@@ -56,7 +56,14 @@ export interface EnvironmentResources {
 export interface Environment {
   environment: EnvironmentName;
   resources: EnvironmentResources;
+  // Only present on a 'COMBINED' request: resources.* are the ones to ADD
+  // and removals.* the already-whitelisted ones to REMOVE, in the same
+  // request. Never set for plain WHITELIST / DEWHITELIST requests.
+  removals?: EnvironmentResources;
 }
+
+// What a request does: add resources, remove resources, or both at once.
+export type RequestType = 'WHITELIST' | 'DEWHITELIST' | 'COMBINED';
 
 // Requested By Information
 export interface RequestedBy {
@@ -95,7 +102,9 @@ export interface WhitelistRequest {
   // pipeline as an ordinary whitelist request, just removing instead of
   // adding the listed resource(s). Undefined/omitted is treated the same
   // as 'WHITELIST' everywhere this is read.
-  requestType?: 'WHITELIST' | 'DEWHITELIST';
+  // 'COMBINED' adds some resources and removes others in one request (see
+  // Environment.removals); the pipeline is the same.
+  requestType?: RequestType;
 }
 
 // Create Request Form Data
@@ -368,6 +377,14 @@ export interface ApiGatewayEnvironmentResources {
   secrets?: string[];
   kmsKeys?: string[];
   functions?: string[];
+  // COMBINED requests only: resources to remove from this environment's
+  // whitelist (the lists above are the ones to add).
+  remove?: {
+    buckets?: string[];
+    secrets?: string[];
+    kmsKeys?: string[];
+    functions?: string[];
+  };
 }
 
 // API Gateway Environments Structure
@@ -386,7 +403,7 @@ export interface ApiGatewayRequestPayload {
   // Omitted (equivalent to 'WHITELIST') unless this is a de-whitelist
   // request from Current Whitelist's remove action - see
   // update_yaml_data(request_type=...) in lambda-gitops/handler.py.
-  request_type?: 'WHITELIST' | 'DEWHITELIST';
+  request_type?: RequestType;
 }
 
 // API Gateway Success Response
