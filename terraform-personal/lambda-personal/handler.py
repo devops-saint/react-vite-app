@@ -666,7 +666,7 @@ def _update_item(request_id, status, event_key, now, stage_index=None, comments=
 # "dpc-portal-validator" - whose trust policy allows this Lambda's own
 # execution role (aws_iam_role.lambda, this same stack) to sts:AssumeRole
 # into it, and whose permissions policy grants at least iam:GetRole,
-# iam:ListRolePolicies, iam:ListAttachedRolePolicies, iam:GetRolePolicy
+# iam:ListRolePolicies, iam:ListAttachedRolePolicies, iam:GetRolePolicy,
 # iam:GetPolicy and iam:GetPolicyVersion, scoped to the
 # matillion-dpc-*-agent-*-irsa role(s) in that account. The role is
 # provisioned by validator_role.tf (same account) or

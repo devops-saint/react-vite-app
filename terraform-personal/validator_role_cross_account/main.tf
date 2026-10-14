@@ -1,20 +1,28 @@
 # dpc-portal-validator role for a CROSS-ACCOUNT environment.
 #
 # Run this ONCE in each AWS account that hosts agent roles but is NOT the
-# account the portal itself runs in (typically DEV, QA and PRD), using that
+# account the portal itself runs in (typically QA and PRD), using that
 # account's own credentials. It is deliberately a separate Terraform root, not
 # part of the portal stack, because the portal stack has no access into those
 # accounts.
 #
 #   cd validator_role_cross_account
-#   export AWS_PROFILE=<profile for the target account>
-#   terraform init
-#   terraform apply -var 'trusted_principal_arn=<value of the portal stack output validator_trusted_principal_arn>'
+#   export AWS_PROFILE=<profile for the target account>   # or any other credentials
+#   export TRUSTED_PRINCIPAL_ARN=<portal stack output validator_trusted_principal_arn>
+#   ./apply.sh qa  <qa account id>
+#   ./apply.sh prd <prd account id>
+#
+# apply.sh keeps one Terraform workspace (= one state) per environment, so QA and
+# PRD never overwrite each other's state, and it refuses to run if the current
+# credentials are not in the account id you gave (expected_account_id below).
+# Plain terraform works too, but then select a separate workspace per account.
+#
+# DEV does not need this when the portal runs in the DEV account: use
+# validator_same_account_environments = ["DEV"] in the portal stack instead.
 #
 # Then copy the printed validator_role_arn into the portal stack's tfvars as
-# aws_validation_role_arn_dev / _qa / _prd (and set aws_account_id_<env> to the
-# printed account_id), and apply the portal stack. Use a different state per
-# account (separate workspace or backend key).
+# aws_validation_role_arn_qa / _prd (and set aws_account_id_<env> to the printed
+# account_id), and apply the portal stack.
 #
 # The portal's main Lambda role must also be allowed to call sts:AssumeRole on
 # arn:aws:iam::*:role/dpc-portal-validator; the portal stack already grants that.
@@ -46,6 +54,17 @@ variable "trusted_principal_arn" {
   }
 }
 
+variable "expected_account_id" {
+  description = "Safety check: when set, Terraform refuses to run unless the credentials belong to this 12-digit AWS account id. Always set it (apply.sh does)."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.expected_account_id == "" || can(regex("^[0-9]{12}$", var.expected_account_id))
+    error_message = "expected_account_id must be a 12-digit AWS account id (or empty)."
+  }
+}
+
 variable "agent_role_name_pattern" {
   description = "Name pattern of the agent roles the validator role may read (IAM wildcards allowed)."
   type        = string
@@ -60,6 +79,9 @@ variable "tags" {
 
 provider "aws" {
   region = var.aws_region
+
+  # null = no restriction.
+  allowed_account_ids = var.expected_account_id != "" ? [var.expected_account_id] : null
 }
 
 data "aws_caller_identity" "current" {}
