@@ -12,3 +12,4 @@ export { CurrentWhitelistPage } from './CurrentWhitelistPage';
 export { TroubleshootingPage } from './TroubleshootingPage';
 export { QnaPage } from './QnaPage';
 export { QnaDetailPage } from './QnaDetailPage';
+export { OnboardMarketPage } from './OnboardMarketPage';

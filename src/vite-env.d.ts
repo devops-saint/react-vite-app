@@ -27,6 +27,7 @@ interface ImportMetaEnv {
   readonly VITE_ROUTE_TROUBLESHOOT: string;
   readonly VITE_ROUTE_QNA: string;
   readonly VITE_ROUTE_QNA_DETAILS: string;
+  readonly VITE_ROUTE_ONBOARD_MARKET: string;
   readonly VITE_TROUBLESHOOTING_CONFLUENCE_PAGES: string;
   readonly VITE_TROUBLESHOOTING_INTERNAL_DOCS: string;
   readonly VITE_TROUBLESHOOTING_MATILLION_DOCS: string;

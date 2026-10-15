@@ -19,7 +19,10 @@ import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import Inventory2Icon from '@mui/icons-material/Inventory2';
 import BuildCircleOutlinedIcon from '@mui/icons-material/BuildCircleOutlined';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
+import AddBusinessOutlinedIcon from '@mui/icons-material/AddBusinessOutlined';
+import { useAuth } from '@/auth';
 import { config } from '@/config';
+import { UserRole } from '@/types/auth.types';
 
 const DRAWER_WIDTH = 260;
 // Collapsed desktop rail width - just wide enough for a centered icon plus
@@ -40,6 +43,8 @@ interface MenuItem {
   // Also highlight for nested routes (e.g. /qna/<id>). Off by default: "My
   // Requests" (/requests) must NOT light up on /requests/create.
   matchNested?: boolean;
+  // Only shown to portal admins.
+  adminOnly?: boolean;
 }
 
 const menuItems: MenuItem[] = [
@@ -75,6 +80,12 @@ const menuItems: MenuItem[] = [
     matchNested: true,
   },
   {
+    title: 'Onboard Market',
+    icon: <AddBusinessOutlinedIcon />,
+    path: config.routes.onboardMarket,
+    adminOnly: true,
+  },
+  {
     title: 'Help',
     icon: <HelpOutlineIcon />,
     path: config.routes.help,
@@ -84,6 +95,9 @@ const menuItems: MenuItem[] = [
 export function Sidebar({ open, onClose }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { hasRole } = useAuth();
+  const isAdmin = hasRole(UserRole.ADMIN);
+  const visibleMenuItems = menuItems.filter((item) => !item.adminOnly || isAdmin);
   // Desktop-only: the rail starts collapsed to icons and expands to show
   // labels while the pointer is over it. Irrelevant on mobile/tablet,
   // where the temporary overlay drawer below is always shown at full width.
@@ -104,7 +118,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
 
   const renderMenuList = (showLabels: boolean) => (
     <List>
-      {menuItems.map((item) => {
+      {visibleMenuItems.map((item) => {
         const active = isActive(item);
         const button = (
           <ListItemButton

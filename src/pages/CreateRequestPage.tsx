@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { config, buildRequestDetailsPath } from '@/config';
+import { buildRequestDetailsPath } from '@/config';
+import { useMarkets } from '@/hooks';
 import {
   Alert,
+  Link,
   Box,
   Button,
   Chip,
@@ -161,6 +163,13 @@ const WHITELIST_FIELD: Record<
 export function CreateRequestPage() {
   const navigate = useNavigate();
   const { user, accessStatus, canMutate, hasMarketAccess, hasEnvironmentAccess } = useAuth();
+  // Markets come from the folders in the config repo, not a static list.
+  const {
+    markets: repoMarkets,
+    loading: marketsLoading,
+    fallback: marketsFallback,
+    reload: reloadMarkets,
+  } = useMarkets();
   const [activeEnvironment, setActiveEnvironment] =
     useState<EnvironmentKey>('DEV');
   // One submission can both add and remove: `resources` is what's staged
@@ -278,12 +287,12 @@ export function CreateRequestPage() {
     return data[WHITELIST_FIELD[resourceKey]];
   };
 
-  const market = config.markets.find((item) => item.code === marketCode);
+  const market = repoMarkets.find((item) => item.code === marketCode);
   // Idea #19 (RBAC-Gated Create Request): only offer markets/environments
   // this user actually has access to. Falls back to the unfiltered list
   // while access is still loading or couldn't be determined - see
   // AuthProvider's hasMarketAccess/hasEnvironmentAccess doc comments.
-  const visibleMarkets = config.markets.filter((item) =>
+  const visibleMarkets = repoMarkets.filter((item) =>
     hasMarketAccess(item.code)
   );
   const visibleEnvironments = marketCode
@@ -539,7 +548,16 @@ export function CreateRequestPage() {
           support if this persists.
         </Alert>
       )}
-      {accessStatus === 'loaded' && visibleMarkets.length === 0 && (
+      {marketsFallback && (
+        <Alert severity="warning" sx={{ mb: 2.5 }}>
+          Couldn&apos;t load the market list from the repository, so the configured list is
+          shown instead - it may be out of date.{' '}
+          <Link component="button" type="button" onClick={reloadMarkets} sx={{ verticalAlign: 'baseline' }}>
+            Retry
+          </Link>
+        </Alert>
+      )}
+      {accessStatus === 'loaded' && !marketsLoading && visibleMarkets.length === 0 && (
         <Alert severity="info" sx={{ mb: 2.5 }}>
           You don&apos;t currently have access to request any market. Contact your admin if
           this looks wrong.

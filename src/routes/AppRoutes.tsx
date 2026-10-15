@@ -18,6 +18,7 @@ const CurrentWhitelistPage = lazy(() => import('@/pages/CurrentWhitelistPage').t
 const TroubleshootingPage = lazy(() => import('@/pages/TroubleshootingPage').then(m => ({ default: m.TroubleshootingPage })));
 const QnaPage = lazy(() => import('@/pages/QnaPage').then(m => ({ default: m.QnaPage })));
 const QnaDetailPage = lazy(() => import('@/pages/QnaDetailPage').then(m => ({ default: m.QnaDetailPage })));
+const OnboardMarketPage = lazy(() => import('@/pages/OnboardMarketPage').then(m => ({ default: m.OnboardMarketPage })));
 const NotFoundPage = lazy(() => import('@/pages/NotFoundPage').then(m => ({ default: m.NotFoundPage })));
 
 function AppRoutes() {
@@ -59,6 +60,9 @@ function AppRoutes() {
           <Route path={config.routes.troubleshoot} element={<TroubleshootingPage />} />
           <Route path={config.routes.qna} element={<QnaPage />} />
           <Route path={config.routes.qnaDetails} element={<QnaDetailPage />} />
+
+          {/* Admin only (the page itself refuses everyone else) */}
+          <Route path={config.routes.onboardMarket} element={<OnboardMarketPage />} />
 
           {/* Help */}
           <Route path={config.routes.help} element={<HelpPage />} />

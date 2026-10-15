@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 import urllib.parse
 
@@ -7,6 +8,7 @@ import boto3
 import requests
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from ruamel.yaml import YAML
@@ -1468,6 +1470,220 @@ def handle_sweep(event, context=None):
     return swept
 
 # =====================================================
+# MARKETS: LIST (from the repo) AND ONBOARD (create the folder)
+# =====================================================
+# A market is a folder under REPO_BASE_PATH named after its market code and
+# holding values files (REPO_BASE_PATH/<market>/values.dev.yaml ...). The
+# portal reads the market list straight from the dev branch - a new market
+# shows up there as soon as its onboarding PR into dev is merged - and
+# onboards a market by opening one PR per trunk branch (dev, qa, master)
+# that adds the folder with its four values files, because a request for
+# the market is promoted through all three and every one of them needs the
+# files to exist.
+
+MARKET_CODE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+MARKET_VALUES_FILE_PATTERN = re.compile(r"^values(\.[a-z0-9]+)?\.ya?ml$", re.IGNORECASE)
+MARKET_VALUES_FILES = ["values.yaml", "values.dev.yaml", "values.qa.yaml", "values.prd.yaml"]
+MARKET_TARGET_BRANCHES = ["dev", "qa", "master"]
+MARKET_LIST_MAX_PAGES = 50
+
+
+def _repo_path(*parts):
+    """Joins repo path parts with single slashes, skipping empty ones."""
+    return "/".join(str(part).strip("/") for part in parts if str(part).strip("/"))
+
+
+def _market_values_template(market_code, file_name):
+    return (
+        f"# {market_code.upper()} - {file_name}\n"
+        "# Resources whitelisted for this market. Managed by the DPC\n"
+        "# Self-Service Portal: requests add and remove entries below.\n"
+        "buckets: []\n"
+        "secrets: []\n"
+        "kmsKeys: []\n"
+        "functions: []\n"
+    )
+
+
+def list_market_codes(branch_name):
+    """Lower-case market folder names on `branch_name`: every direct
+    sub-folder of REPO_BASE_PATH that holds a values*.yaml file. One
+    paginated 'list files' call rather than one call per folder, and a
+    stray folder with no values file (docs, templates) is not a market."""
+    base = _repo_path(REPO_BASE_PATH)
+    url = (
+        f"{BITBUCKET_URL}"
+        f"/rest/api/latest/projects/{PROJECT_KEY}"
+        f"/repos/{REPO_SLUG}"
+        f"/files/{urllib.parse.quote(base, safe='/')}"
+    )
+    markets = set()
+    start = 0
+    for _ in range(MARKET_LIST_MAX_PAGES):
+        response = _request_with_retry(
+            "GET",
+            url,
+            operation=f"List market folders on {branch_name}",
+            headers=get_headers(),
+            params={"at": f"refs/heads/{branch_name}", "start": start, "limit": 1000},
+            timeout=30,
+        )
+        if response.status_code == 404:
+            return []
+        check_response(response, f"List market folders on {branch_name}")
+        body = response.json()
+        for path in body.get("values", []):
+            relative = str(path)
+            # Bitbucket returns paths relative to the requested directory;
+            # tolerate a repo-root-relative form too.
+            if base and relative.startswith(base + "/"):
+                relative = relative[len(base) + 1:]
+            parts = relative.split("/")
+            if (
+                len(parts) == 2
+                and MARKET_CODE_PATTERN.match(parts[0].lower())
+                and MARKET_VALUES_FILE_PATTERN.match(parts[1])
+            ):
+                markets.add(parts[0].lower())
+        if body.get("isLastPage", True):
+            break
+        start = body.get("nextPageStart")
+        if start is None:
+            break
+    return sorted(markets)
+
+
+def handle_list_markets(event):
+    codes = list_market_codes(SOURCE_BRANCH)
+    return {
+        "status": "SUCCESS",
+        "branch": SOURCE_BRANCH,
+        "markets": [code.upper() for code in codes],
+    }
+
+
+def _onboard_market_on_branch(market_code, target_branch, requested_by):
+    """Cuts gitops/onboard-<market>-<target> from the tip of `target_branch`,
+    adds whichever of the four values files are not there yet, and opens a
+    PR back into `target_branch`. Safe to re-run: an existing branch, file
+    or PR is reused instead of failing."""
+    branch_name = f"gitops/onboard-{market_code}-{target_branch}"
+    create_branch(branch_name, get_latest_commit(target_branch))
+
+    created = []
+    for file_name in MARKET_VALUES_FILES:
+        file_path = _repo_path(REPO_BASE_PATH, market_code, file_name)
+        try:
+            get_file_content(branch_name, file_path)
+            continue
+        except requests.exceptions.HTTPError as error:
+            if error.response is None or error.response.status_code != 404:
+                raise
+        commit_file(
+            branch_name,
+            file_path,
+            _market_values_template(market_code, file_name),
+            f"Onboard market {market_code.upper()}: add {file_name} (requested by {requested_by})",
+        )
+        created.append(file_name)
+
+    pr = create_pull_request(
+        branch_name,
+        to_ref=target_branch,
+        title=f"[Onboard market] {market_code.upper()} -> {target_branch}",
+        description=(
+            f"Adds the {market_code.upper()} market folder "
+            f"({', '.join(MARKET_VALUES_FILES)}) to {target_branch}.\n\n"
+            f"Requested by {requested_by} through the DPC Self-Service Portal."
+        ),
+    )
+    links = (pr.get("links") or {}).get("self") or [{}]
+    return {
+        "branch": target_branch,
+        "sourceBranch": branch_name,
+        "prId": pr.get("id"),
+        "prUrl": links[0].get("href", ""),
+        "filesCreated": created,
+    }
+
+
+def _notify_market_onboarding(market_code, requested_by, results):
+    if not PR_APPROVER_EMAILS or not NOTIFICATION_FROM_EMAIL:
+        print("[NOTIFY] approver emails or sender not configured - skipping market onboarding notification")
+        return
+    lines = "\n".join(f"  {r['branch']}: {r.get('prUrl') or '(link unavailable)'}" for r in results)
+    try:
+        ses.send_email(
+            Source=NOTIFICATION_FROM_EMAIL,
+            Destination={"ToAddresses": PR_APPROVER_EMAILS},
+            Message={
+                "Subject": {"Data": f"[Action required] Review PRs to onboard market {market_code.upper()}"},
+                "Body": {
+                    "Text": {
+                        "Data": (
+                            f"A new market is being onboarded.\n\n"
+                            f"Market: {market_code.upper()}\n"
+                            f"Requested by: {requested_by}\n"
+                            f"Pull requests:\n{lines}\n"
+                        )
+                    }
+                },
+            },
+        )
+    except Exception as error:
+        print(f"[NOTIFY] Failed to email approvers about market {market_code}: {error}")
+
+
+def handle_onboard_market(event):
+    market_code = (event.get("market_code") or "").strip().lower()
+    if not MARKET_CODE_PATTERN.match(market_code):
+        return {
+            "status": "INVALID",
+            "message": "Market code must be 1-32 letters, digits, '-' or '_' and start with a letter or digit",
+        }
+    requested_by = str((event.get("requested_by") or {}).get("email") or "unknown")
+
+    with ThreadPoolExecutor(max_workers=len(MARKET_TARGET_BRANCHES)) as pool:
+        listings = dict(zip(MARKET_TARGET_BRANCHES, pool.map(list_market_codes, MARKET_TARGET_BRANCHES)))
+    missing = [branch for branch in MARKET_TARGET_BRANCHES if market_code not in listings[branch]]
+    if not missing:
+        return {
+            "status": "EXISTS",
+            "message": f"Market {market_code.upper()} already exists on dev, qa and master",
+        }
+
+    results = []
+    failures = []
+    with ThreadPoolExecutor(max_workers=len(missing)) as pool:
+        futures = {
+            branch: pool.submit(_onboard_market_on_branch, market_code, branch, requested_by)
+            for branch in missing
+        }
+        for branch in missing:
+            try:
+                results.append(futures[branch].result())
+            except Exception as error:
+                print(f"[ONBOARD] {market_code} -> {branch} failed: {error}")
+                failures.append({"branch": branch, "error": str(error)})
+
+    if results:
+        _notify_market_onboarding(market_code, requested_by, results)
+    if failures:
+        return {
+            "status": "ERROR",
+            "message": "Onboarding failed for: " + "; ".join(f"{f['branch']} ({f['error']})" for f in failures),
+            "results": results,
+            "failures": failures,
+        }
+    return {
+        "status": "SUCCESS",
+        "marketCode": market_code.upper(),
+        "alreadyPresentOn": [b for b in MARKET_TARGET_BRANCHES if b not in missing],
+        "results": results,
+    }
+
+
+# =====================================================
 # LAMBDA HANDLER
 # =====================================================
 
@@ -1497,6 +1713,16 @@ def lambda_handler(event, context):
         # failures (_report_failure/_mark_request_sync_failed) that don't
         # apply to a read with no request_id or DynamoDB item involved.
         return handle_get_whitelist(event)
+
+    if action == "LIST_MARKETS":
+        # Same shape as GET_WHITELIST: a synchronous read for the main
+        # Lambda's GET /dpc/markets, outside the request-failure reporting.
+        return handle_list_markets(event)
+
+    if action == "ONBOARD_MARKET":
+        # Synchronous too (admin POST /dpc/markets) - the caller needs the
+        # PR links, and a failure is reported straight back to it.
+        return handle_onboard_market(event)
 
     if action == "CANCEL":
         # Best-effort cleanup only - the main Lambda has already committed

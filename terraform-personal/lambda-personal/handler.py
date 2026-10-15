@@ -1237,6 +1237,52 @@ def _apply_admin_allowlist(access_body, requested_email):
     return {**access_body, "access": {**access, "role": "developer"}}
 
 
+# =====================================================
+# MARKETS (list from the config repo / admin onboarding)
+# =====================================================
+# GET  /dpc/markets - the market codes found in the config repo (folders
+#      under REPO_BASE_PATH on the dev branch), via the GitOps Lambda.
+#      Cached briefly per warm container: the Create Request and View
+#      Whitelist pages both load it, and the repo changes rarely.
+# POST /dpc/markets - admin-only: opens PRs that add a new market folder
+#      (values.yaml + values.dev/qa/prd.yaml) to dev, qa and master.
+MARKET_CODE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+MARKETS_CACHE_SECONDS = 60
+_markets_cache = {"markets": None, "expires": 0.0}
+
+
+def _invoke_gitops_sync(payload):
+    """Synchronous GitOps Lambda call. Returns its result dict, or None
+    when the call or the Lambda itself failed (logged, never raised)."""
+    try:
+        invoke_result = lambda_client.invoke(
+            FunctionName=gitops_lambda_name,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(payload),
+        )
+        result = json.loads(invoke_result["Payload"].read())
+    except (ClientError, json.JSONDecodeError) as error:
+        print(f"[MARKETS] GitOps invoke failed for {payload.get('action')}: {error}")
+        return None
+    if invoke_result.get("FunctionError") or not isinstance(result, dict):
+        print(f"[MARKETS] GitOps lambda error for {payload.get('action')}: {result}")
+        return None
+    return result
+
+
+def _is_portal_admin(email):
+    """True only for a real portal admin: on PORTAL_ADMIN_EMAILS, or
+    reported as role admin by the Azure AD group lookup (which already
+    demotes anyone not on that list). Unlike the Q&A check it ignores
+    QNA_ADMIN_EMAILS - that list is just who gets notified about
+    questions. Any failure means "not admin"."""
+    if not email:
+        return False
+    if email.strip().lower() in PORTAL_ADMIN_EMAILS:
+        return True
+    return _qna_is_admin(email, include_qna_admins=False)
+
+
 def _send_notification_email(to_addresses, subject, body):
     """Best-effort email. Never raises - a notification failure must not
     fail the question/comment that was already durably stored."""
@@ -1259,7 +1305,7 @@ def _send_notification_email(to_addresses, subject, body):
         print(f"[QNA] Failed to send email '{subject}': {error}")
 
 
-def _qna_is_admin(email):
+def _qna_is_admin(email, include_qna_admins=True):
     """True only when the email is positively known to be an admin: either
     listed in QNA_ADMIN_EMAILS, or the Azure AD group-fetch Lambda (same
     one GET /dpc/access uses) says role == admin. Any failure means
@@ -1269,7 +1315,7 @@ def _qna_is_admin(email):
     if not email:
         return False
     normalized = email.strip().lower()
-    if normalized in {admin.lower() for admin in QNA_ADMIN_EMAILS}:
+    if include_qna_admins and normalized in {admin.lower() for admin in QNA_ADMIN_EMAILS}:
         return True
     if not azure_ad_group_fetch_lambda_name:
         return False
@@ -1981,6 +2027,75 @@ def handle_request(event):
             )
 
         return response(200, whitelist_payload, origin)
+
+    if path == "/dpc/markets" and method == "GET":
+        if not gitops_lambda_name:
+            return response(503, {"message": "GitOps Lambda not configured"}, origin)
+        now_ts = time.time()
+        cached_markets = _markets_cache["markets"]
+        if cached_markets is not None and _markets_cache["expires"] > now_ts:
+            return response(200, {"markets": cached_markets}, origin)
+        markets_result = _invoke_gitops_sync({"action": "LIST_MARKETS"})
+        if markets_result is None or markets_result.get("status") != "SUCCESS":
+            return response(502, {"message": "Failed to load markets from the repository"}, origin)
+        markets = sorted(
+            {str(code).upper() for code in markets_result.get("markets", []) if isinstance(code, str)}
+        )
+        _markets_cache["markets"] = markets
+        _markets_cache["expires"] = now_ts + MARKETS_CACHE_SECONDS
+        return response(200, {"markets": markets}, origin)
+
+    if path == "/dpc/markets" and method == "POST":
+        try:
+            market_body = json.loads(event.get("body") or "{}")
+        except json.JSONDecodeError:
+            return response(400, {"message": "Invalid request body"}, origin)
+        if not isinstance(market_body, dict):
+            return response(400, {"message": "Invalid request body"}, origin)
+        new_market = str(market_body.get("market_code") or "").strip().lower()
+        admin_email = str(market_body.get("email") or "").strip()
+        if not MARKET_CODE_PATTERN.match(new_market):
+            return response(
+                400,
+                {"message": "Market code must be 1-32 letters, digits, '-' or '_' and start with a letter or digit"},
+                origin,
+            )
+        if not _is_portal_admin(admin_email):
+            print(f"[MARKETS] Refused onboarding of {new_market!r}: {admin_email!r} is not a portal admin")
+            return response(403, {"message": "Only portal admins can onboard a market"}, origin)
+        if not gitops_lambda_name:
+            return response(503, {"message": "GitOps Lambda not configured"}, origin)
+
+        print(f"[MARKETS] {admin_email!r} is onboarding market {new_market!r}")
+        onboard_result = _invoke_gitops_sync(
+            {"action": "ONBOARD_MARKET", "market_code": new_market, "requested_by": {"email": admin_email}}
+        )
+        if onboard_result is None:
+            return response(502, {"message": "Failed to reach the repository to onboard the market"}, origin)
+        onboard_status = onboard_result.get("status")
+        if onboard_status == "EXISTS":
+            return response(409, {"message": onboard_result.get("message", "Market already exists")}, origin)
+        if onboard_status == "INVALID":
+            return response(400, {"message": onboard_result.get("message", "Invalid market code")}, origin)
+        if onboard_status != "SUCCESS":
+            return response(
+                502,
+                {
+                    "message": onboard_result.get("message", "Failed to onboard the market"),
+                    "pullRequests": onboard_result.get("results", []),
+                },
+                origin,
+            )
+        _markets_cache["markets"] = None
+        return response(
+            201,
+            {
+                "marketCode": onboard_result.get("marketCode", new_market.upper()),
+                "pullRequests": onboard_result.get("results", []),
+                "alreadyPresentOn": onboard_result.get("alreadyPresentOn", []),
+            },
+            origin,
+        )
 
     if method == "GET" and path == "/dpc/access":
         # RBAC (idea #19): resolve the caller's real role and

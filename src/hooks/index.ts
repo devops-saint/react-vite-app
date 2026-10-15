@@ -1,2 +1,2 @@
-// Custom hooks - to be implemented in future phases
-export {};
+export { useMarkets, invalidateMarketsCache } from './useMarkets';
+export type { UseMarketsResult } from './useMarkets';
