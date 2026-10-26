@@ -245,6 +245,7 @@ export const config = {
     troubleshoot: import.meta.env.VITE_ROUTE_TROUBLESHOOT || '/troubleshoot',
     qna: import.meta.env.VITE_ROUTE_QNA || '/qna',
     qnaDetails: import.meta.env.VITE_ROUTE_QNA_DETAILS || '/qna/:id',
+    onboardMarket: import.meta.env.VITE_ROUTE_ONBOARD_MARKET || '/onboard-market',
   },
 } as const;
 

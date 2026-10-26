@@ -16,6 +16,7 @@ const routeNameMap: Record<string, string> = {
   profile: 'Profile',
   qna: 'Q&A',
   troubleshoot: 'Troubleshooting',
+  'onboard-market': 'Onboard Market',
 };
 
 export function Breadcrumbs() {

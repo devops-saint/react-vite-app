@@ -1,10 +1,17 @@
+import base64
 import fnmatch
 import json
 import os
+import re
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from decimal import Decimal
+from html.parser import HTMLParser
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
@@ -15,6 +22,7 @@ table = boto3.resource("dynamodb").Table(os.environ["DYNAMODB_TABLE"])
 allowed_origins = set(json.loads(os.environ.get("CORS_ALLOW_ORIGINS", "[]")))
 
 lambda_client = boto3.client("lambda")
+secrets_client = boto3.client("secretsmanager")
 gitops_lambda_name = os.environ.get("GITOPS_LAMBDA_NAME")
 # RBAC (idea #19) - a separate org Lambda (aws_lambda_function.azure_ad_group_fetch,
 # provisioned outside this repo) that GET /dpc/access invokes
@@ -174,21 +182,27 @@ def response(status_code, body, origin=None):
     }
 
 
+def _frontend_resources(lists):
+    return {
+        "s3Buckets": [{"bucketName": value} for value in lists.get("buckets", [])],
+        "secretsManager": [{"secretArn": value} for value in lists.get("secrets", [])],
+        "kmsKeys": [{"keyArn": value} for value in lists.get("kmsKeys", [])],
+        "lambdaFunctions": [{"functionArn": value} for value in lists.get("functions", [])],
+    }
+
+
 def frontend_request(item):
     payload = item["payload"]
     environments = []
     for name, resources in payload.get("environments", {}).items():
-        environments.append(
-            {
-                "environment": name.upper(),
-                "resources": {
-                    "s3Buckets": [{"bucketName": value} for value in resources.get("buckets", [])],
-                    "secretsManager": [{"secretArn": value} for value in resources.get("secrets", [])],
-                    "kmsKeys": [{"keyArn": value} for value in resources.get("kmsKeys", [])],
-                    "lambdaFunctions": [{"functionArn": value} for value in resources.get("functions", [])],
-                },
-            }
-        )
+        environment = {
+            "environment": name.upper(),
+            "resources": _frontend_resources(resources),
+        }
+        # COMBINED requests: the resources the request also removes.
+        if isinstance(resources.get("remove"), dict):
+            environment["removals"] = _frontend_resources(resources["remove"])
+        environments.append(environment)
     return {
         "requestId": item["request_id"],
         "marketCode": payload.get("market_code", "UNKNOWN").upper(),
@@ -891,13 +905,22 @@ def verify_environment_access(market_code, environment, env_resources, request_t
         return None
 
     requested = _requested_resource_arns(env_resources)
-    if not requested:
+    if request_type == "DEWHITELIST":
+        # Every listed resource must be gone.
+        return not any(_resource_covered(arn, allowed_patterns) for arn in requested)
+
+    # WHITELIST: every listed resource must be present. COMBINED: the same,
+    # AND everything under "remove" must be gone.
+    to_remove = []
+    if request_type == "COMBINED" and isinstance(env_resources.get("remove"), dict):
+        to_remove = _requested_resource_arns(env_resources["remove"])
+
+    if not requested and not to_remove:
         return True
 
-    covered = [_resource_covered(arn, allowed_patterns) for arn in requested]
-    if request_type == "DEWHITELIST":
-        return not any(covered)
-    return all(covered)
+    return all(_resource_covered(arn, allowed_patterns) for arn in requested) and not any(
+        _resource_covered(arn, allowed_patterns) for arn in to_remove
+    )
 
 
 def _record_verification_attempt(request_id, now, detail):
@@ -1207,6 +1230,52 @@ def _apply_admin_allowlist(access_body, requested_email):
     return {**access_body, "access": {**access, "role": "developer"}}
 
 
+# =====================================================
+# MARKETS (list from the config repo / admin onboarding)
+# =====================================================
+# GET  /dpc/markets - the market codes found in the config repo (folders
+#      under REPO_BASE_PATH on the dev branch), via the GitOps Lambda.
+#      Cached briefly per warm container: the Create Request and View
+#      Whitelist pages both load it, and the repo changes rarely.
+# POST /dpc/markets - admin-only: opens PRs that add a new market folder
+#      (values.yaml + values.dev/qa/prd.yaml) to dev, qa and master.
+MARKET_CODE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+MARKETS_CACHE_SECONDS = 60
+_markets_cache = {"markets": None, "expires": 0.0}
+
+
+def _invoke_gitops_sync(payload):
+    """Synchronous GitOps Lambda call. Returns its result dict, or None
+    when the call or the Lambda itself failed (logged, never raised)."""
+    try:
+        invoke_result = lambda_client.invoke(
+            FunctionName=gitops_lambda_name,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(payload),
+        )
+        result = json.loads(invoke_result["Payload"].read())
+    except (ClientError, json.JSONDecodeError) as error:
+        print(f"[MARKETS] GitOps invoke failed for {payload.get('action')}: {error}")
+        return None
+    if invoke_result.get("FunctionError") or not isinstance(result, dict):
+        print(f"[MARKETS] GitOps lambda error for {payload.get('action')}: {result}")
+        return None
+    return result
+
+
+def _is_portal_admin(email):
+    """True only for a real portal admin: on PORTAL_ADMIN_EMAILS, or
+    reported as role admin by the Azure AD group lookup (which already
+    demotes anyone not on that list). Unlike the Q&A check it ignores
+    QNA_ADMIN_EMAILS - that list is just who gets notified about
+    questions. Any failure means "not admin"."""
+    if not email:
+        return False
+    if email.strip().lower() in PORTAL_ADMIN_EMAILS:
+        return True
+    return _qna_is_admin(email, include_qna_admins=False)
+
+
 def _send_notification_email(to_addresses, subject, body):
     """Best-effort email. Never raises - a notification failure must not
     fail the question/comment that was already durably stored."""
@@ -1229,7 +1298,7 @@ def _send_notification_email(to_addresses, subject, body):
         print(f"[QNA] Failed to send email '{subject}': {error}")
 
 
-def _qna_is_admin(email):
+def _qna_is_admin(email, include_qna_admins=True):
     """True only when the email is positively known to be an admin: either
     listed in QNA_ADMIN_EMAILS, or the Azure AD group-fetch Lambda (same
     one GET /dpc/access uses) says role == admin. Any failure means
@@ -1239,7 +1308,7 @@ def _qna_is_admin(email):
     if not email:
         return False
     normalized = email.strip().lower()
-    if normalized in {admin.lower() for admin in QNA_ADMIN_EMAILS}:
+    if include_qna_admins and normalized in {admin.lower() for admin in QNA_ADMIN_EMAILS}:
         return True
     if not azure_ad_group_fetch_lambda_name:
         return False
@@ -1477,6 +1546,317 @@ def handle_qna(method, path, event, origin):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Troubleshooting knowledge: Confluence pages read with a service account
+#
+# The browser can't read the org's Confluence pages (they need a login), so
+# GET /dpc/troubleshoot/confluence fetches the pages listed in
+# CONFLUENCE_PAGE_URLS here, using a service account whose credentials live
+# in Secrets Manager (CONFLUENCE_SECRET_ID), and returns their plain text for
+# the Troubleshooting page's search. The endpoint takes NO input: it can only
+# ever fetch the configured pages, from the hosts in those URLs, over https,
+# and the credentials are never sent anywhere else (redirects are not
+# followed). Results are cached in memory for CONFLUENCE_CACHE_SECONDS.
+#
+# Secret format (JSON, or a bare token string):
+#   {"username": "...", "api_token": "..."}   -> HTTP Basic (Confluence Cloud
+#                                                email + API token, or Data
+#                                                Center user + password/token)
+#   {"token": "..."}                          -> Bearer (Data Center personal
+#                                                access token)
+# Accepted key names: username|user|email and api_token|apiToken|token|pat|
+# password.
+# ---------------------------------------------------------------------------
+def _confluence_int_env(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+CONFLUENCE_PAGE_URLS = [
+    url.strip()
+    for url in os.environ.get("CONFLUENCE_PAGE_URLS", "").split(",")
+    if url.strip()
+]
+CONFLUENCE_SECRET_ID = os.environ.get("CONFLUENCE_SECRET_ID", "").strip()
+CONFLUENCE_API_BASE_URL = os.environ.get("CONFLUENCE_API_BASE_URL", "").strip().rstrip("/")
+CONFLUENCE_CACHE_SECONDS = max(60, _confluence_int_env("CONFLUENCE_CACHE_SECONDS", 900))
+CONFLUENCE_MAX_PAGES = 20
+CONFLUENCE_TEXT_LIMIT = 8000
+CONFLUENCE_REQUEST_TIMEOUT = 6
+CONFLUENCE_TOTAL_TIMEOUT = 20
+CONFLUENCE_RETRY_SECONDS = 60
+
+_confluence_cache = {"expires": 0.0, "pages": []}
+_confluence_auth_cache = {"expires": 0.0, "header": None}
+
+
+class _ConfluenceNoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: it could carry the Authorization header to
+    another host. A 3xx simply surfaces as an HTTPError."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_confluence_opener = urllib.request.build_opener(_ConfluenceNoRedirect)
+
+
+class _ConfluenceText(HTMLParser):
+    """Confluence storage format (XHTML + ac:/ri: macros) -> plain text."""
+
+    _BLOCK_TAGS = {"p", "div", "br", "li", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6", "pre"}
+    _SKIP_TAGS = {"script", "style", "ac:parameter"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP_TAGS:
+            self._skip += 1
+        elif tag in self._BLOCK_TAGS:
+            self.parts.append(" ")
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP_TAGS and self._skip:
+            self._skip -= 1
+        elif tag in self._BLOCK_TAGS:
+            self.parts.append(" ")
+
+    def handle_data(self, data):
+        if not self._skip:
+            self.parts.append(data)
+
+    def unknown_decl(self, data):
+        # <![CDATA[ ... ]]> (code/noformat macro bodies).
+        if not self._skip and data.startswith("CDATA["):
+            self.parts.append(data[len("CDATA["):])
+
+
+def _confluence_html_to_text(markup):
+    parser = _ConfluenceText()
+    try:
+        parser.feed(markup or "")
+        parser.close()
+    except Exception as error:  # malformed markup: keep whatever was parsed
+        print(f"[CONFLUENCE] HTML parse problem ({type(error).__name__}) - using partial text")
+    return re.sub(r"\s+", " ", " ".join(parser.parts)).strip()[:CONFLUENCE_TEXT_LIMIT]
+
+
+def _confluence_page_ref(url):
+    """Works out the REST API base and page reference for one configured
+    page URL. Returns None for anything unsupported (not https, a tiny
+    /x/ link, ...)."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        return None
+    host_root = f"https://{parsed.netloc}"
+    path = parsed.path or ""
+
+    api_base = ""
+    if CONFLUENCE_API_BASE_URL and urllib.parse.urlparse(CONFLUENCE_API_BASE_URL).netloc == parsed.netloc:
+        api_base = CONFLUENCE_API_BASE_URL
+    elif parsed.hostname.endswith(".atlassian.net"):
+        api_base = f"{host_root}/wiki/rest/api"
+    else:
+        positions = [path.index(m) for m in ("/pages/", "/display/", "/spaces/") if m in path]
+        context = path[: min(positions)] if positions else ""
+        api_base = f"{host_root}{context}/rest/api"
+
+    page_id = None
+    match = re.search(r"/pages/(\d+)", path)
+    if match:
+        page_id = match.group(1)
+    else:
+        values = urllib.parse.parse_qs(parsed.query).get("pageId", [])
+        if values and values[0].isdigit():
+            page_id = values[0]
+    if page_id:
+        return {"api_base": api_base, "page_id": page_id}
+
+    match = re.search(r"/display/([^/]+)/([^/?#]+)", path)
+    if match:
+        return {
+            "api_base": api_base,
+            "space": urllib.parse.unquote(match.group(1)),
+            "title": urllib.parse.unquote_plus(match.group(2)),
+        }
+    return None
+
+
+def _confluence_auth_header():
+    """Authorization header for the Confluence service account, read from
+    Secrets Manager (cached for 5 minutes). None if it can't be read."""
+    now = time.time()
+    if _confluence_auth_cache["header"] and now < _confluence_auth_cache["expires"]:
+        return _confluence_auth_cache["header"]
+    if not CONFLUENCE_SECRET_ID:
+        return None
+    try:
+        raw = secrets_client.get_secret_value(SecretId=CONFLUENCE_SECRET_ID).get("SecretString") or ""
+    except ClientError as error:
+        code = error.response.get("Error", {}).get("Code", "unknown")
+        print(f"[CONFLUENCE] Could not read the service account secret ({code})")
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        data = raw.strip()
+    if isinstance(data, str):
+        data = {"token": data}
+    if not isinstance(data, dict):
+        print("[CONFLUENCE] Service account secret has an unsupported format")
+        return None
+
+    def first(*names):
+        for name in names:
+            value = data.get(name)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    username = first("username", "user", "email")
+    secret = first("api_token", "apiToken", "token", "pat", "password")
+    if username and secret:
+        header = "Basic " + base64.b64encode(f"{username}:{secret}".encode("utf-8")).decode("ascii")
+    elif secret:
+        header = "Bearer " + secret
+    else:
+        print("[CONFLUENCE] Service account secret has no usable token/password")
+        return None
+    _confluence_auth_cache.update({"header": header, "expires": now + 300})
+    return header
+
+
+def _confluence_get_json(url, auth):
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": auth,
+            "Accept": "application/json",
+            "User-Agent": "dpc-portal-troubleshooting/1.0",
+        },
+    )
+    with _confluence_opener.open(request, timeout=CONFLUENCE_REQUEST_TIMEOUT) as reply:
+        return json.loads(reply.read(2_000_000))
+
+
+def _fetch_confluence_page(url, auth):
+    """Title + plain text of one configured page, or None."""
+    ref = _confluence_page_ref(url)
+    if not ref:
+        print("[CONFLUENCE] Skipping a page URL this portal can't map to the REST API")
+        return None
+    query = urllib.parse.urlencode({"expand": "body.storage"})
+    if ref.get("page_id"):
+        data = _confluence_get_json(f"{ref['api_base']}/content/{ref['page_id']}?{query}", auth)
+    else:
+        lookup = urllib.parse.urlencode(
+            {"spaceKey": ref["space"], "title": ref["title"], "expand": "body.storage", "limit": 1}
+        )
+        found = _confluence_get_json(f"{ref['api_base']}/content?{lookup}", auth)
+        results = found.get("results") if isinstance(found, dict) else None
+        data = results[0] if results else None
+    if not isinstance(data, dict):
+        return None
+    storage = (data.get("body") or {}).get("storage") or {}
+    return {
+        "url": url,
+        "title": str(data.get("title") or "")[:200],
+        "text": _confluence_html_to_text(storage.get("value", "")),
+    }
+
+
+def get_confluence_pages():
+    """Cached list of {url, title, text} for CONFLUENCE_PAGE_URLS. Pages that
+    can't be read right now fall back to their last good copy (if any)."""
+    now = time.time()
+    if _confluence_cache["expires"] > now:
+        return _confluence_cache["pages"]
+
+    urls = CONFLUENCE_PAGE_URLS[:CONFLUENCE_MAX_PAGES]
+    auth = _confluence_auth_header()
+    previous = {page["url"]: page for page in _confluence_cache["pages"]}
+    if not auth:
+        _confluence_cache["expires"] = now + CONFLUENCE_RETRY_SECONDS
+        return _confluence_cache["pages"]
+
+    pool = ThreadPoolExecutor(max_workers=5)
+    futures = {pool.submit(_fetch_confluence_page, url, auth): url for url in urls}
+    done, _not_done = wait(futures, timeout=CONFLUENCE_TOTAL_TIMEOUT)
+    pool.shutdown(wait=False, cancel_futures=True)
+
+    pages = []
+    failures = 0
+    for future, url in futures.items():
+        page = None
+        if future in done:
+            try:
+                page = future.result()
+            except urllib.error.HTTPError as error:
+                print(f"[CONFLUENCE] A page returned HTTP {error.code}")
+            except Exception as error:
+                print(f"[CONFLUENCE] A page could not be read ({type(error).__name__})")
+        page = page or previous.get(url)
+        if page:
+            pages.append(page)
+        else:
+            failures += 1
+
+    _confluence_cache["pages"] = pages
+    _confluence_cache["expires"] = now + (CONFLUENCE_RETRY_SECONDS if failures else CONFLUENCE_CACHE_SECONDS)
+    return pages
+
+
+REQUEST_TYPES = ("WHITELIST", "DEWHITELIST", "COMBINED")
+REQUEST_RESOURCE_SECTIONS = ("buckets", "secrets", "kmsKeys", "functions")
+
+
+def _validate_request_payload(payload):
+    """Returns an error message for a malformed new request, else None.
+    request_type must be one of REQUEST_TYPES. An environment's nested
+    "remove" lists (the resources a COMBINED request takes away) are only
+    allowed on COMBINED requests, must be lists of strings, and must not
+    name anything that the same environment also adds."""
+    if not isinstance(payload, dict):
+        return "Invalid request payload"
+    request_type = payload.get("request_type")
+    if request_type is not None and str(request_type).upper() not in REQUEST_TYPES:
+        return "request_type must be WHITELIST, DEWHITELIST or COMBINED"
+    environments = payload.get("environments")
+    if not isinstance(environments, dict):
+        return "environments must be an object"
+    is_combined = str(request_type or "").upper() == "COMBINED"
+    has_removal = False
+    for env_resources in environments.values():
+        if not isinstance(env_resources, dict):
+            return "each environment must be an object"
+        remove = env_resources.get("remove")
+        if remove is None:
+            continue
+        if not is_combined:
+            return "remove lists are only allowed on COMBINED requests"
+        if not isinstance(remove, dict):
+            return "remove must be an object"
+        for section in REQUEST_RESOURCE_SECTIONS:
+            removed = remove.get(section, [])
+            if not isinstance(removed, list) or not all(isinstance(value, str) for value in removed):
+                return "remove lists must be lists of strings"
+            added = env_resources.get(section, [])
+            if not isinstance(added, list):
+                return "resource lists must be lists"
+            if removed:
+                has_removal = True
+            if {value.lower() for value in removed} & {str(value).lower() for value in added}:
+                return "A resource cannot be added and removed in the same request"
+    if is_combined and not has_removal:
+        return "COMBINED requests need at least one resource to remove"
+    return None
+
+
 def handle_request(event):
     method = event["requestContext"]["http"]["method"]
     path = event.get("rawPath", "")
@@ -1492,6 +1872,10 @@ def handle_request(event):
                 return response(400, {"message": "market_code, environments, and submitted_by.id are required"}, origin)
         except (json.JSONDecodeError, KeyError):
             return response(400, {"message": "Invalid request payload"}, origin)
+
+        validation_error = _validate_request_payload(payload)
+        if validation_error:
+            return response(400, {"message": validation_error}, origin)
 
         now = datetime.now(timezone.utc).isoformat()
         target_stages = compute_target_stages(payload)
@@ -1544,6 +1928,13 @@ def handle_request(event):
             message = "Request queued - another request for this market is already in progress"
 
         return response(201, {"statusCode": 201, "message": message, "requestId": request_id, "status": status}, origin)
+
+    if method == "GET" and path == "/dpc/troubleshoot/confluence":
+        # Page text for the Troubleshooting page's search (see
+        # get_confluence_pages). Unconfigured -> an empty, successful answer.
+        if not CONFLUENCE_PAGE_URLS or not CONFLUENCE_SECRET_ID:
+            return response(200, {"configured": False, "pages": []}, origin)
+        return response(200, {"configured": True, "pages": get_confluence_pages()}, origin)
 
     if method == "GET" and path == "/dpc/listrequests":
         if not user_id:
@@ -1638,6 +2029,75 @@ def handle_request(event):
             )
 
         return response(200, whitelist_payload, origin)
+
+    if path == "/dpc/markets" and method == "GET":
+        if not gitops_lambda_name:
+            return response(503, {"message": "GitOps Lambda not configured"}, origin)
+        now_ts = time.time()
+        cached_markets = _markets_cache["markets"]
+        if cached_markets is not None and _markets_cache["expires"] > now_ts:
+            return response(200, {"markets": cached_markets}, origin)
+        markets_result = _invoke_gitops_sync({"action": "LIST_MARKETS"})
+        if markets_result is None or markets_result.get("status") != "SUCCESS":
+            return response(502, {"message": "Failed to load markets from the repository"}, origin)
+        markets = sorted(
+            {str(code).upper() for code in markets_result.get("markets", []) if isinstance(code, str)}
+        )
+        _markets_cache["markets"] = markets
+        _markets_cache["expires"] = now_ts + MARKETS_CACHE_SECONDS
+        return response(200, {"markets": markets}, origin)
+
+    if path == "/dpc/markets" and method == "POST":
+        try:
+            market_body = json.loads(event.get("body") or "{}")
+        except json.JSONDecodeError:
+            return response(400, {"message": "Invalid request body"}, origin)
+        if not isinstance(market_body, dict):
+            return response(400, {"message": "Invalid request body"}, origin)
+        new_market = str(market_body.get("market_code") or "").strip().lower()
+        admin_email = str(market_body.get("email") or "").strip()
+        if not MARKET_CODE_PATTERN.match(new_market):
+            return response(
+                400,
+                {"message": "Market code must be 1-32 letters, digits, '-' or '_' and start with a letter or digit"},
+                origin,
+            )
+        if not _is_portal_admin(admin_email):
+            print(f"[MARKETS] Refused onboarding of {new_market!r}: {admin_email!r} is not a portal admin")
+            return response(403, {"message": "Only portal admins can onboard a market"}, origin)
+        if not gitops_lambda_name:
+            return response(503, {"message": "GitOps Lambda not configured"}, origin)
+
+        print(f"[MARKETS] {admin_email!r} is onboarding market {new_market!r}")
+        onboard_result = _invoke_gitops_sync(
+            {"action": "ONBOARD_MARKET", "market_code": new_market, "requested_by": {"email": admin_email}}
+        )
+        if onboard_result is None:
+            return response(502, {"message": "Failed to reach the repository to onboard the market"}, origin)
+        onboard_status = onboard_result.get("status")
+        if onboard_status == "EXISTS":
+            return response(409, {"message": onboard_result.get("message", "Market already exists")}, origin)
+        if onboard_status == "INVALID":
+            return response(400, {"message": onboard_result.get("message", "Invalid market code")}, origin)
+        if onboard_status != "SUCCESS":
+            return response(
+                502,
+                {
+                    "message": onboard_result.get("message", "Failed to onboard the market"),
+                    "pullRequests": onboard_result.get("results", []),
+                },
+                origin,
+            )
+        _markets_cache["markets"] = None
+        return response(
+            201,
+            {
+                "marketCode": onboard_result.get("marketCode", new_market.upper()),
+                "pullRequests": onboard_result.get("results", []),
+                "alreadyPresentOn": onboard_result.get("alreadyPresentOn", []),
+            },
+            origin,
+        )
 
     if method == "GET" and path == "/dpc/access":
         # RBAC (idea #19): resolve the caller's real role and

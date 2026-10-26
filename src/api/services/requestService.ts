@@ -8,6 +8,8 @@ import {
   EnvironmentName,
   RequestedBy,
   CurrentWhitelist,
+  EnvironmentResources,
+  RequestType,
   matchesStatusGroup,
 } from '@/types/request.types';
 import { config } from '@/config';
@@ -24,6 +26,23 @@ import apiGatewayAxios from '../apiGatewayAxios';
 /**
  * Parse backend environments format to frontend format
  */
+const parseResourceLists = (
+  resourceObj: Record<string, unknown>
+): EnvironmentResources => ({
+  s3Buckets: ((resourceObj['buckets'] as string[]) || []).map(
+    (name: string) => ({ bucketName: name })
+  ),
+  secretsManager: ((resourceObj['secrets'] as string[]) || []).map(
+    (arn: string) => ({ secretArn: arn })
+  ),
+  kmsKeys: ((resourceObj['kmsKeys'] as string[]) || []).map(
+    (arn: string) => ({ keyArn: arn })
+  ),
+  lambdaFunctions: ((resourceObj['functions'] as string[]) || []).map(
+    (arn: string) => ({ functionArn: arn })
+  ),
+});
+
 const parseEnvironments = (envs: unknown): Environment[] => {
   if (!envs || typeof envs !== 'object') return [];
 
@@ -35,27 +54,23 @@ const parseEnvironments = (envs: unknown): Environment[] => {
     const envKey = envName.toUpperCase() as EnvironmentName;
     if (['DEV', 'QA', 'PRD'].includes(envKey)) {
       const resourceObj = resources as Record<string, unknown>;
+      const removeObj = resourceObj['remove'];
       result.push({
         environment: envKey,
-        resources: {
-          s3Buckets: ((resourceObj['buckets'] as string[]) || []).map(
-            (name: string) => ({ bucketName: name })
-          ),
-          secretsManager: ((resourceObj['secrets'] as string[]) || []).map(
-            (arn: string) => ({ secretArn: arn })
-          ),
-          kmsKeys: ((resourceObj['kmsKeys'] as string[]) || []).map(
-            (arn: string) => ({ keyArn: arn })
-          ),
-          lambdaFunctions: ((resourceObj['functions'] as string[]) || []).map(
-            (arn: string) => ({ functionArn: arn })
-          ),
-        },
+        resources: parseResourceLists(resourceObj),
+        ...(removeObj && typeof removeObj === 'object'
+          ? { removals: parseResourceLists(removeObj as Record<string, unknown>) }
+          : {}),
       });
     }
   }
 
   return result;
+};
+
+const parseRequestType = (value: unknown): RequestType => {
+  const upper = typeof value === 'string' ? value.toUpperCase() : '';
+  return upper === 'DEWHITELIST' || upper === 'COMBINED' ? upper : 'WHITELIST';
 };
 
 /**
@@ -100,10 +115,7 @@ const transformBackendRequest = (
     createdAt: backendRequest.createdAt,
     updatedAt: backendRequest.createdAt, // Backend doesn't provide updatedAt
     prUrls: backendRequest.prUrls,
-    requestType:
-      (payload.request_type || '').toUpperCase() === 'DEWHITELIST'
-        ? 'DEWHITELIST'
-        : 'WHITELIST',
+    requestType: parseRequestType(payload.request_type),
   };
 };
 
@@ -114,7 +126,7 @@ export const requestService = {
   createRequest: async (
     data: CreateRequestFormData,
     submittedBy: RequestedBy,
-    requestType: 'WHITELIST' | 'DEWHITELIST' = 'WHITELIST'
+    requestType: RequestType = 'WHITELIST'
   ): Promise<WhitelistRequest> => {
     console.log('[REQUEST SERVICE] createRequest called', {
       apiBaseUrl: import.meta.env.VITE_API_BASE_URL,

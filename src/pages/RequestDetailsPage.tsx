@@ -407,6 +407,11 @@ export function RequestDetailsPage() {
                   </Box>
                 )}
                 <Box sx={{ pl: 2 }}>
+                  {env.removals && (
+                    <Typography variant="overline" color="text.secondary" display="block">
+                      Resources to add
+                    </Typography>
+                  )}
                   {env.resources.s3Buckets.length > 0 && (
                     <Box sx={{ mb: 2 }}>
                       <Typography
@@ -546,6 +551,41 @@ export function RequestDetailsPage() {
                       </List>
                     </Box>
                   )}
+                  {/* COMBINED requests: the already-whitelisted resources this
+                      request also removes, listed apart from the additions. */}
+                  {env.removals &&
+                    (() => {
+                      const removed = [
+                        ...env.removals.s3Buckets.map((b) => b.bucketName),
+                        ...env.removals.secretsManager.map((s2) => s2.secretArn),
+                        ...env.removals.kmsKeys.map((k) => k.keyArn),
+                        ...env.removals.lambdaFunctions.map((f) => f.functionArn),
+                      ];
+                      if (removed.length === 0) return null;
+                      return (
+                        <Box sx={{ mt: 1, mb: 2 }}>
+                          <Typography variant="overline" color="error" display="block">
+                            Resources to remove ({removed.length})
+                          </Typography>
+                          <List dense>
+                            {removed.map((value, i) => (
+                              <ListItem key={i}>
+                                <ListItemText
+                                  primary={value}
+                                  primaryTypographyProps={{
+                                    variant: 'body2',
+                                    sx: { wordBreak: 'break-all' },
+                                  }}
+                                />
+                                <IconButton size="small" onClick={() => handleCopy(value)}>
+                                  <ContentCopyIcon fontSize="small" />
+                                </IconButton>
+                              </ListItem>
+                            ))}
+                          </List>
+                        </Box>
+                      );
+                    })()}
                 </Box>
               </Box>
               ));

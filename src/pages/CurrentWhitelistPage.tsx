@@ -12,6 +12,7 @@ import {
   IconButton,
   Chip,
   Alert,
+  Link,
   Tooltip,
   Tabs,
   Tab,
@@ -27,7 +28,8 @@ import Inventory2Icon from '@mui/icons-material/Inventory2';
 import CloseIcon from '@mui/icons-material/Close';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import { Loader, ErrorState, AgentRoleArn } from '@/components/common';
-import { config, buildRequestDetailsPath } from '@/config';
+import { buildRequestDetailsPath } from '@/config';
+import { useMarkets } from '@/hooks';
 import { requestService } from '@/api/services';
 import { useAuth } from '@/auth';
 import { CurrentWhitelist } from '@/types/request.types';
@@ -57,6 +59,13 @@ const MIN_JUSTIFICATION_LENGTH = 20;
 export function CurrentWhitelistPage() {
   const navigate = useNavigate();
   const { user, accessStatus, canMutate, hasMarketAccess, hasEnvironmentAccess } = useAuth();
+  // Markets come from the folders in the config repo, not a static list.
+  const {
+    markets: repoMarkets,
+    loading: marketsLoading,
+    fallback: marketsFallback,
+    reload: reloadMarkets,
+  } = useMarkets();
   // Market still requires an explicit choice - showing a default market on
   // load would read as "here's this market's whitelist" before the viewer
   // has chosen anything. Environment no longer needs a dropdown: once a
@@ -111,12 +120,12 @@ export function CurrentWhitelistPage() {
   }, [fetchAll]);
 
   const readyToShow = Boolean(marketCode);
-  const market = config.markets.find((item) => item.code === marketCode);
+  const market = repoMarkets.find((item) => item.code === marketCode);
   // Idea #19 (RBAC-Gated Create Request) also covers viewing (idea #19's
   // own description: viewing stays open but is scoped to markets/envs the
   // user has access to) - falls back to the unfiltered list while access
   // is still loading or couldn't be determined, same as Create Request.
-  const visibleMarkets = config.markets.filter((item) => hasMarketAccess(item.code));
+  const visibleMarkets = repoMarkets.filter((item) => hasMarketAccess(item.code));
   const visibleEnvironments = marketCode
     ? ENVIRONMENTS.filter((env) => hasEnvironmentAccess(marketCode, env))
     : ENVIRONMENTS;
@@ -197,7 +206,16 @@ export function CurrentWhitelistPage() {
           contact support if this persists.
         </Alert>
       )}
-      {accessStatus === 'loaded' && visibleMarkets.length === 0 && (
+      {marketsFallback && (
+        <Alert severity="warning" sx={{ mb: 3 }}>
+          Couldn&apos;t load the market list from the repository, so the configured list is
+          shown instead - it may be out of date.{' '}
+          <Link component="button" type="button" onClick={reloadMarkets} sx={{ verticalAlign: 'baseline' }}>
+            Retry
+          </Link>
+        </Alert>
+      )}
+      {accessStatus === 'loaded' && !marketsLoading && visibleMarkets.length === 0 && (
         <Alert severity="info" sx={{ mb: 3 }}>
           You don&apos;t currently have access to view any market. Contact your admin if this
           looks wrong.
