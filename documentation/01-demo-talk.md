@@ -20,11 +20,11 @@
 
 ## 1. Opening
 
-Good morning everyone. Thank you all for joining.
+Good afternoon everyone.
 
-Today I will show you our new **Self-Service Whitelisting Portal**. In short, this is the portal where a team can ask for access to their AWS resources, and the whole process then runs by itself.
+Today I will show you our new **DPC Self-Service Whitelisting Portal**. In short, this is the portal where user can ask for access to their AWS resources to be accessed from dpc pipeline, and the whole process then runs by itself.
 
-I will not go deep into code. I will show you what the user sees, what happens behind the screen, and what we get out of it. At the end we will have time for questions.
+I will show you what the user sees, what happens behind the screen, and what we get out of it. At the end we will have time for questions.
 
 ---
 
@@ -32,14 +32,12 @@ I will not go deep into code. I will show you what the user sees, what happens b
 
 First, let me tell you why we built this.
 
-Earlier, when a team needed the Matillion agent to reach an S3 bucket, a secret, a KMS key or a Lambda function, the process was like this:
+Earlier, when a market needed the Matillion agent to reach an S3 bucket, a secret, a KMS key or a Lambda function, the process was like this:
 
-1. Raise a ticket or send a mail.
-2. Somebody manually opens the config repository and edits a YAML file.
-3. Somebody raises a pull request.
-4. Somebody reviews it.
-5. The same change is again done for QA and again for production.
-6. Nobody is fully sure whether the access is really live in AWS or not.
+1. Raise a ticket.
+2. L2 team manually clones the config repository and edits a YAML file and then raises a pull request to dev.
+4. The approver reviews it and then terraform run applies
+5. The PR gets raised for QA and again for production.
 
 So there were a few problems. It took more time. Small typos happened in ARNs. Two people edited the same file and got merge conflicts. And the requester always had to ask, "What is the status of my request?"
 
@@ -51,7 +49,7 @@ So our idea was simple: **let the user ask in one form, and let the system do th
 
 ## 3. What is the portal, in one minute
 
-The portal is a web application. The user signs in with the company Microsoft account.
+The portal is a web application. The user signs in with the pmi account using sso login.
 
 Behind the screen, three things happen:
 
@@ -67,7 +65,7 @@ So we always keep **Git as the source of truth** and we keep **approval in place
 
 [Show: Login page, then Dashboard]
 
-Okay, so first the user signs in with the company Microsoft account. We use the same sign-in as other company tools. There is no separate password for this portal.
+Okay, so first the user signs in with the pmi account sso.
 
 Once you are in, the portal checks who you are and what you are allowed to do. This comes from your Azure AD group. Based on that, you get one of three roles:
 
