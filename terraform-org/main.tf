@@ -381,7 +381,7 @@ resource "aws_lambda_function" "main" {
       # listed here is reported to the portal as role "developer".
       PORTAL_ADMIN_EMAILS = join(",", var.portal_admin_emails)
       # Troubleshooting page: Confluence pages read with a service account
-      # (see confluence_knowledge.tf).
+      # (see the Confluence section of main.tf).
       CONFLUENCE_PAGE_URLS     = join(",", var.confluence_page_urls)
       CONFLUENCE_SECRET_ID     = var.confluence_secret_id
       CONFLUENCE_API_BASE_URL  = var.confluence_api_base_url
@@ -714,4 +714,92 @@ resource "aws_lambda_permission" "eventbridge_verification_sweep" {
   function_name = aws_lambda_function.main.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.aws_verification_sweep.arn
+}
+
+# =====================================================
+# Troubleshooting: Confluence knowledge (service account)
+# =====================================================
+# Troubleshooting page: read Confluence pages with a service account.
+#
+# The portal's Troubleshooting page can only search the title/keywords/summary
+# you put in VITE_TROUBLESHOOTING_CONFLUENCE_PAGES, because the browser can't
+# open org-internal Confluence pages. With this file configured, the main
+# Lambda (GET /troubleshoot/confluence) fetches the text of the pages listed in
+# confluence_page_urls using a service account whose credentials are in
+# Secrets Manager, so the search also matches what the pages actually say.
+#
+# Setup:
+#   1. Create a Secrets Manager secret holding the service account, as JSON:
+#        {"username": "svc-account", "api_token": "..."}   -> HTTP Basic
+#        {"token": "..."}                                  -> Bearer (Data Center PAT)
+#      (accepted key names: username|user|email and
+#       api_token|apiToken|token|pat|password)
+#   2. Give the account read access to the pages (view permission).
+#   3. Set confluence_secret_id (secret name or full ARN) and
+#      confluence_page_urls below, then apply.
+#
+# Nothing here is created or changed while confluence_secret_id is empty
+# except the (harmless) route, which then answers {"configured": false}.
+# The Lambda must be able to reach Confluence over the internet (it is not in a
+# VPC); for an internal-only Confluence it would need VPC/network access.
+
+locals {
+  confluence_secret_resource = (
+    substr(var.confluence_secret_id, 0, 4) == "arn:"
+    ? var.confluence_secret_id
+    : "arn:aws:secretsmanager:${data.aws_region.current.name}:${var.account_id}:secret:${var.confluence_secret_id}-??????"
+  )
+}
+
+# Read-only access to exactly that one secret.
+resource "aws_iam_role_policy" "confluence_secret_read" {
+  count = var.confluence_secret_id != "" ? 1 : 0
+
+  name = "confluence-service-account-secret-read"
+  role = aws_iam_role.main_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = local.confluence_secret_resource
+    }]
+  })
+}
+
+resource "aws_apigatewayv2_route" "troubleshoot_confluence" {
+  api_id    = aws_apigatewayv2_api.portal.id
+  route_key = "GET /troubleshoot/confluence"
+  target    = "integrations/${aws_apigatewayv2_integration.main.id}"
+}
+
+# =====================================================
+# Markets: dynamic list + admin onboarding
+# =====================================================
+# Dynamic market list + admin market onboarding.
+#
+# GET  /markets - market codes read from the config repo (the folders under
+#                 the repo path, on the dev branch) by the GitOps Lambda.
+#                 Replaces the static VITE_AVAILABLE_MARKETS list.
+# POST /markets - admin-only (checked in the Lambda): opens PRs adding a new
+#                 market folder with values.yaml and values.dev/qa/prd.yaml
+#                 to dev, qa and master.
+#
+# Route keys have no /dpc prefix here because this stack uses the named
+# "dpc" stage, which adds it. No new IAM or variables: the main Lambda
+# already may invoke the GitOps Lambda, and its git token already has write
+# access. This stack deploys the shared handler.py, so the Lambda code
+# needs rebuilding into var.lambda_filename for these routes to work.
+
+resource "aws_apigatewayv2_route" "markets_list" {
+  api_id    = aws_apigatewayv2_api.portal.id
+  route_key = "GET /markets"
+  target    = "integrations/${aws_apigatewayv2_integration.main.id}"
+}
+
+resource "aws_apigatewayv2_route" "markets_onboard" {
+  api_id    = aws_apigatewayv2_api.portal.id
+  route_key = "POST /markets"
+  target    = "integrations/${aws_apigatewayv2_integration.main.id}"
 }

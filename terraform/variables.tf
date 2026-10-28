@@ -181,3 +181,34 @@ variable "portal_admin_emails" {
     error_message = "Every portal_admin_emails entry must look like an email address (no spaces or commas)."
   }
 }
+
+# --- Troubleshooting: Confluence knowledge (see the Confluence section of main.tf) ---
+
+variable "confluence_page_urls" {
+  description = "https URLs of the Confluence pages the Troubleshooting page should read (Cloud /wiki/spaces/.../pages/<id>/..., Data Center /pages/viewpage.action?pageId=<id> or /display/<SPACE>/<Title>). At most 20 are used."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for url in var.confluence_page_urls : can(regex("^https://[^\\s,]+$", url))])
+    error_message = "Every confluence_page_urls entry must be an https URL without spaces or commas."
+  }
+}
+
+variable "confluence_secret_id" {
+  description = "Name or full ARN of the Secrets Manager secret with the Confluence service account (see the Confluence section of main.tf for the format). Empty disables the feature. If the secret uses a customer-managed KMS key, also allow the Lambda role kms:Decrypt on it."
+  type        = string
+  default     = ""
+}
+
+variable "confluence_api_base_url" {
+  description = "Optional override of the Confluence REST API base, e.g. https://wiki.example.com/confluence/rest/api. Leave empty to derive it from each page URL. Must be on the same host as the page URLs."
+  type        = string
+  default     = ""
+}
+
+variable "confluence_cache_seconds" {
+  description = "How long the Lambda keeps fetched Confluence text in memory before reading the pages again (minimum 60)."
+  type        = number
+  default     = 900
+}
