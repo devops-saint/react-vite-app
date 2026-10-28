@@ -1087,10 +1087,25 @@ def handle_stage_event(event_key, request_ids, origin, promotion_key=None, pr_id
             # market lock still releases here (the git-side pipeline for
             # this market really is done), but the requester's
             # completion email is deferred to the sweep.
-            updated = _update_item(request_id, "PENDING_AWS_VERIFICATION", "pr:merged", now, stage_index=new_stage_index, comments=comments, stage=merged_stage)
+            # TEMPORARILY DISABLED - AWS-side verification. Original behaviour,
+            # kept here so it can be switched back on (also re-enable the
+            # requester e-mail inside handle_validation_sweep's COMPLETED
+            # branch, which is untouched):
+            #
+            # updated = _update_item(request_id, "PENDING_AWS_VERIFICATION", "pr:merged", now, stage_index=new_stage_index, comments=comments, stage=merged_stage)
+            # completed_ids.append(request_id)
+            # if updated:
+            #     _release_and_forward_market_lock(market_code, request_id, now)
+            #
+            # For now the request is marked COMPLETED as soon as its last PR
+            # merges, and the requester is e-mailed here (the sweep would
+            # have done that). Nothing new reaches PENDING_AWS_VERIFICATION,
+            # so VALIDATE_SWEEP finds nothing to check for new requests.
+            updated = _update_item(request_id, "COMPLETED", "pr:merged", now, stage_index=new_stage_index, comments=comments, stage=merged_stage)
             completed_ids.append(request_id)
             if updated:
                 _release_and_forward_market_lock(market_code, request_id, now)
+                notify_requester_merged(updated)
         else:
             status = f"{merged_branch.upper()}_MERGED_AWAITING_{next_branch.upper()}"
             _update_item(request_id, status, "pr:merged", now, stage_index=new_stage_index, comments=comments, stage=merged_stage)
