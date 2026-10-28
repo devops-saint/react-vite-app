@@ -54,7 +54,6 @@ interface DewhitelistTarget {
   value: string;
 }
 
-const MIN_JUSTIFICATION_LENGTH = 20;
 
 export function CurrentWhitelistPage() {
   const navigate = useNavigate();
@@ -154,8 +153,8 @@ export function CurrentWhitelistPage() {
       );
       return;
     }
-    if (dewhitelistJustification.trim().length < MIN_JUSTIFICATION_LENGTH) {
-      setDewhitelistError(`Add at least ${MIN_JUSTIFICATION_LENGTH} characters explaining why this should be removed.`);
+    if (dewhitelistJustification.trim().length === 0) {
+      setDewhitelistError('Add a business justification explaining why this should be removed.');
       return;
     }
     setDewhitelistSubmitting(true);
@@ -327,7 +326,6 @@ export function CurrentWhitelistPage() {
                 fullWidth
                 value={dewhitelistJustification}
                 onChange={(e) => setDewhitelistJustification(e.target.value)}
-                helperText={`${dewhitelistJustification.trim().length}/${MIN_JUSTIFICATION_LENGTH} characters minimum`}
                 disabled={dewhitelistSubmitting}
               />
               {dewhitelistError && (

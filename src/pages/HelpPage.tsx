@@ -70,7 +70,7 @@ export function HelpPage() {
           <ListItem>
             <ListItemText
               primary="3. Add a business justification"
-              secondary="Explain why the access is needed (minimum 20 characters)"
+              secondary="Explain why the access is needed"
             />
           </ListItem>
           <ListItem>

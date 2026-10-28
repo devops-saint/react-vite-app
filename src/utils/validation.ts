@@ -62,8 +62,7 @@ export const createRequestSchema = z.object({
   marketName: z.string().min(1, 'Market name is required'),
   businessJustification: z
     .string()
-    .min(20, 'Business justification must be at least 20 characters')
-    .max(1000, 'Business justification must not exceed 1000 characters'),
+    .min(1, 'Business justification is required'),
 
   // Environments
   environments: z

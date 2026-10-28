@@ -453,14 +453,14 @@ export function CreateRequestPage() {
     }
     if (
       !market ||
-      businessJustification.trim().length < 20 ||
+      businessJustification.trim().length === 0 ||
       totalResources === 0
     ) {
       setSnackbar({
         open: true,
         severity: 'warning',
         message:
-          'Choose a market, add a 20-character justification, and stage at least one resource.',
+          'Choose a market, add a business justification, and stage at least one resource.',
       });
       return;
     }
@@ -627,7 +627,6 @@ export function CreateRequestPage() {
                 onChange={(event) =>
                   setBusinessJustification(event.target.value)
                 }
-                helperText={`${businessJustification.trim().length}/20 minimum characters`}
                 sx={{ gridColumn: { sm: '1 / -1' } }}
               />
             </Box>

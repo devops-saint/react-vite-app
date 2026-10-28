@@ -105,13 +105,13 @@ export const TROUBLESHOOTING_ARTICLES: TroubleshootingArticle[] = [
     summary:
       'Each resource is checked against its AWS format before you can add it. Copying the value straight from the AWS console avoids most typos.',
     keywords:
-      'invalid arn format error validation bucket name rejected secret kms key lambda function arn wrong not accepted cannot add resource justification too short characters',
+      'invalid arn format error validation bucket name rejected secret kms key lambda function arn wrong not accepted cannot add resource',
     steps: [
       'S3 bucket: 3 to 63 characters, lowercase letters, digits, dots and hyphens, starting and ending with a letter or digit.',
       'Secrets Manager: arn:aws:secretsmanager:<region>:<12-digit account>:secret:<name>.',
       'KMS key: arn:aws:kms:<region>:<12-digit account>:key/<key id>. Use the key ARN, not an alias.',
       'Lambda: arn:aws:lambda:<region>:<12-digit account>:function:<name>.',
-      'The business justification must be at least 20 characters.',
+      'A business justification is required (any length).',
     ],
     path: config.routes.requestsCreate,
     pathLabel: 'Open Create Request',
